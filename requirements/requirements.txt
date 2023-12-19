@@ -1,2 +1,2 @@
 kafka-python==2.0.2
-setuptools-62.4.0
+setuptools==62.4.0

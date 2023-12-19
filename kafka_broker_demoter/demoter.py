@@ -1,5 +1,6 @@
 import copy
 import json
+import logging
 import os
 import random
 import string
@@ -15,6 +16,8 @@ from kafka_broker_demoter.exceptions import (
     PreferredLeaderMismatchCurrentLeader,
     TriggerLeaderElectionError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Demoter(object):
@@ -122,7 +125,7 @@ class Demoter(object):
     def _create_topic(self):
         topics = self._get_admin_client.list_topics()
         if self.topic_tracker not in topics:
-            print(
+            logger.info(
                 "Creating a new topic called {} for tracking broker demotion rollback".format(
                     self.topic_tracker
                 )
@@ -147,7 +150,7 @@ class Demoter(object):
             )
         current_partitions_state = self._get_partition_leaders_by_broker_id(broker_id)
         if not current_partitions_state["partitions"]:
-            print(
+            logger.info(
                 "Broker {} already demoted, no partition leaders found".format(
                     broker_id
                 )

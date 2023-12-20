@@ -10,7 +10,7 @@ __location__ = os.path.join(
     os.getcwd(), os.path.dirname(inspect.getfile(inspect.currentframe()))
 )
 
-version = "1.1.3"
+version = "1.1.4"
 
 this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()
@@ -23,7 +23,7 @@ def get_install_requirements(path):
 
 
 setup(
-    python_requires=">=3.8",
+    python_requires=">=3.7",
     name="kafka_broker_demoter",
     long_description=long_description,
     long_description_content_type="text/markdown",

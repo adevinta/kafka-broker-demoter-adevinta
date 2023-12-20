@@ -203,7 +203,9 @@ class Demoter(object):
 
     def _generate_tmpfile_with_admin_configs(self):
         tmp_file = tempfile.NamedTemporaryFile(delete=False)
-        tmp_file.write("default.api.timeout.ms=120000\n".encode())
+        tmp_file.write(
+            "default.api.timeout.ms=120000\nrequest.timeout.ms=60000".encode()
+        )
         tmp_file.close()
         return tmp_file.name
 

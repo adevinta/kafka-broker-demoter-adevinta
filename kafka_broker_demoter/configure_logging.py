@@ -7,7 +7,7 @@ def configure_logging(log_level, log_file):
     else:
         log_level = logging.INFO
 
-    logger = logging.getLogger("pagecache")
+    logger = logging.getLogger("kafka_broker_demoter")
     logger.setLevel(log_level)
     formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
 

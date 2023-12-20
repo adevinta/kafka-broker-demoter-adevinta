@@ -10,7 +10,7 @@ __location__ = os.path.join(
     os.getcwd(), os.path.dirname(inspect.getfile(inspect.currentframe()))
 )
 
-version = "1.1.5"
+version = "1.1.6"
 
 this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()
@@ -31,7 +31,7 @@ setup(
     description="Tool for safely demote a broker from a kafka cluster",
     author="Sergio Troiano",
     author_email="sergio_troiano@hotmail.com",
-    packages=find_packages(include=["pagecache"]),
+    packages=find_packages(include=["kafka_broker_demoter"]),
     install_requires=get_install_requirements("requirements/requirements.txt"),
     test_suite="tests",
     zip_safe=False,

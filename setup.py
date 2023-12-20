@@ -23,6 +23,7 @@ def get_install_requirements(path):
 
 
 setup(
+    python_requires=">=3.8",
     name="kafka_broker_demoter",
     long_description=long_description,
     long_description_content_type="text/markdown",

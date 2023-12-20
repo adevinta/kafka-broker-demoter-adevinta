@@ -224,6 +224,11 @@ class Demoter(object):
         )
 
         if result.returncode != 0:
+            logger.error(
+                "Failed to trigger leader election, error: {}, command: {}".format(
+                    result.stdout.strip(), command
+                )
+            )
             raise TriggerLeaderElectionError(result.stdout.strip())
 
     def _save_rollback_plan(self, broker_id, current_partitions_state):

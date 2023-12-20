@@ -61,9 +61,14 @@ class Demoter(object):
         producer.send(self.topic_tracker, key=serialized_key, value=serialized_value)
         producer.flush()
         producer.close()
+        logger.info("Produced record with key {} and value {}".format(key, value))
 
     def _remove_non_existent_topics(self, broker_id):
         partitions = self._consume_latest_record_per_key(broker_id)
+        if partitions is None:
+            logger.debug("No partitions found for broker {}".format(broker_id))
+            return None
+
         existing_topics = [topic["topic"] for topic in self._get_topics_metadata()]
         new_partitions = []
 
@@ -91,6 +96,7 @@ class Demoter(object):
             for record in record_list:
                 if int(record.key.decode("utf-8")) == key:
                     latest_record = json.loads(record.value.decode("utf-8"))
+        logger.debug("Latest record found for key {}: {}".format(key, latest_record))
         consumer.close()
         return latest_record
 
@@ -166,7 +172,6 @@ class Demoter(object):
 
     def demote_rollback(self, broker_id):
         previous_partitions_state = self._remove_non_existent_topics(broker_id)
-        previous_partitions_state = self._consume_latest_record_per_key(broker_id)
         if previous_partitions_state is None:
             raise BrokerStatusError(
                 "Previous demote operation on broker {} was not found, there is nothing to rollback".format(
@@ -176,6 +181,9 @@ class Demoter(object):
         self._change_replica_assignment(previous_partitions_state)
         self._trigger_leader_election(previous_partitions_state)
         self._produce_record(broker_id, None)
+        logger.info(
+            "Rollback plan for broker {} was successfully executed".format(broker_id)
+        )
 
     def _generate_tempfile_with_json_content(self, data):
         filename = "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
@@ -204,7 +212,7 @@ class Demoter(object):
     def _generate_tmpfile_with_admin_configs(self):
         tmp_file = tempfile.NamedTemporaryFile(delete=False)
         tmp_file.write(
-            "default.api.timeout.ms=120000\nrequest.timeout.ms=60000".encode()
+            "default.api.timeout.ms=240000\nrequest.timeout.ms=120000".encode()
         )
         tmp_file.close()
         return tmp_file.name
@@ -234,4 +242,5 @@ class Demoter(object):
             raise TriggerLeaderElectionError(result.stdout.strip())
 
     def _save_rollback_plan(self, broker_id, current_partitions_state):
+        logger.info("Saving rollback plan for broker {}".format(broker_id))
         self._produce_record(broker_id, current_partitions_state)

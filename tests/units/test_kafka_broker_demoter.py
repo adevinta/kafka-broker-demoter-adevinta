@@ -1,18 +1,237 @@
 import json
+import os
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
 
 # Import the class you want to test (assuming it's in a separate module)
-from kafka_broker_demoter.demoter import Demoter
+from kafka_broker_demoter.demoter import BrokerStatusError, Demoter
 from kafka_broker_demoter.exceptions import PreferredLeaderMismatchCurrentLeader
 
 # from kafka import KafkaConsumer
 
 
 class TestDemoter(unittest.TestCase):
+    def test_demote_successful_demote_operation(self):
+        # Create an instance of Demoter
+        broker_id = 45
+        demoter = Demoter()
+        get_partition_leaders_by_broker_id_result = {"partitions": [1, 2, 3]}
+        get_demoting_proposal_result = {"a": 1}
+
+        # Patch the necessary methods to simulate the scenario
+        with patch.object(
+            demoter, "_create_topic", return_value=None
+        ) as mock_create_topic, patch.object(
+            demoter, "_consume_latest_record_per_key", return_value=None
+        ) as mock_consume_latest_record_per_key, patch.object(
+            demoter,
+            "_get_partition_leaders_by_broker_id",
+            return_value=get_partition_leaders_by_broker_id_result,
+        ) as mock_get_partition_leaders_by_broker_id, patch.object(
+            demoter, "_get_demoting_proposal", return_value=get_demoting_proposal_result
+        ) as mock_get_demoting_proposal, patch.object(
+            demoter, "_change_replica_assignment"
+        ) as mock_change_replica_assignment, patch.object(
+            demoter, "_trigger_leader_election"
+        ) as mock_trigger_leader_election, patch.object(
+            demoter, "_save_rollback_plan"
+        ) as mock_save_rollback_plan:
+            # Check if the methods were called correctly in the expected orderi
+            mock = MagicMock()
+            mock.attach_mock(mock_create_topic, "_create_topic")
+            mock.attach_mock(
+                mock_consume_latest_record_per_key, "_consume_latest_record_per_key"
+            )
+            mock.attach_mock(
+                mock_get_partition_leaders_by_broker_id,
+                "_get_partition_leaders_by_broker_id",
+            )
+            mock.attach_mock(mock_get_demoting_proposal, "_get_demoting_proposal")
+            mock.attach_mock(
+                mock_change_replica_assignment, "_change_replica_assignment"
+            )
+            mock.attach_mock(mock_trigger_leader_election, "_trigger_leader_election")
+            mock.attach_mock(mock_save_rollback_plan, "_save_rollback_plan")
+
+            # Call the demote() method with a successful demote operation
+            demoter.demote(broker_id=broker_id)
+
+            mock.assert_has_calls(
+                [
+                    call._create_topic(),
+                    call._consume_latest_record_per_key(broker_id),
+                    call._get_partition_leaders_by_broker_id(broker_id),
+                    call._get_demoting_proposal(
+                        broker_id, get_partition_leaders_by_broker_id_result
+                    ),
+                    call._change_replica_assignment(get_demoting_proposal_result),
+                    call._trigger_leader_election(get_demoting_proposal_result),
+                    call._save_rollback_plan(
+                        broker_id, get_partition_leaders_by_broker_id_result
+                    ),
+                ],
+                any_order=False,
+            )
+
+    def test_demote_rollback_success(self):
+        # Dummy data
+        broker_id = 123
+        previous_partitions_state = "previous_state"
+
+        with patch.object(
+            Demoter,
+            "_remove_non_existent_topics",
+            return_value=previous_partitions_state,
+        ):
+            with patch.object(
+                Demoter, "_change_replica_assignment"
+            ) as mock_change_replica_assignment:
+                with patch.object(
+                    Demoter, "_trigger_leader_election"
+                ) as mock_trigger_leader_election:
+                    with patch.object(
+                        Demoter, "_produce_record"
+                    ) as mock_produce_record:
+                        # Create an instance of Demoter
+                        demoter = Demoter()
+
+                        # Call the demote_rollback() method
+                        demoter.demote_rollback(broker_id)
+
+                        # Verify the method calls and assertions
+                        mock_change_replica_assignment.assert_called_once_with(
+                            previous_partitions_state
+                        )
+                        mock_trigger_leader_election.assert_called_once_with(
+                            previous_partitions_state
+                        )
+                        mock_produce_record.assert_called_once_with(broker_id, None)
+
+    def test_demote_rollback_failure(self):
+        # Dummy data
+        broker_id = 123
+        previous_partitions_state = None
+
+        with patch.object(
+            Demoter,
+            "_remove_non_existent_topics",
+            return_value=previous_partitions_state,
+        ):
+            with self.assertRaises(BrokerStatusError):
+                # Create an instance of Demoter
+                demoter = Demoter()
+
+                # Call the demote_rollback() method
+                demoter.demote_rollback(broker_id)
+
+    def test_generate_tempfile_with_json_content(self):
+        demoter = Demoter()
+        data = {"key1": "value1", "key2": "value2", "key3": "value3"}
+
+        expected_contents = json.dumps(data)
+
+        actual_result = demoter._generate_tempfile_with_json_content(data)
+
+        with open(actual_result, "r") as actual_file:
+            # Assert that the contents of the file match the expected contents
+            self.assertEqual(actual_file.read(), expected_contents)
+
+    def test_generate_tmpfile_with_admin_configs(self):
+        demoter = Demoter()
+        expected_content = demoter.admin_config_content
+
+        admin_config_path = demoter._generate_tmpfile_with_admin_configs()
+
+        with open(admin_config_path, "r") as actual_file:
+            # Assert that the contents of the file match the expected contents
+            self.assertEqual(actual_file.read(), expected_content)
+
+    @patch("subprocess.run")
+    @patch("os.environ.copy")
+    def test_change_replica_assignment(self, mock_environ_copy, mock_subprocess_run):
+        kafka_path = "/path/to/kafka"
+        bootstrap_servers = "localhost:9092"
+        kafka_heap_opts = "-Xmx1G"
+        demoting_plan = {"broker_id": 1}
+
+        # Mock subprocess.run() method behavior
+        mock_subprocess_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Leader reassignment successful",
+            stderr="",
+        )
+
+        demoter = Demoter(
+            kafka_path=kafka_path,
+            bootstrap_servers=bootstrap_servers,
+            kafka_heap_opts=kafka_heap_opts,
+        )
+        demoter._change_replica_assignment(demoting_plan)
+
+        # Generate the command and expected environment variables
+        expected_command = "{}/bin/kafka-reassign-partitions.sh --bootstrap-server {} --reassignment-json-file {} --execute --timeout 60".format(
+            kafka_path,
+            bootstrap_servers,
+            demoter.partitions_temp_filepath,
+        )
+
+        expected_env_vars = os.environ.copy()
+        expected_env_vars["KAFKA_HEAP_OPTS"] = kafka_heap_opts
+
+        # Assert that subprocess.run() is called with correct parameters
+        mock_subprocess_run.assert_called_with(
+            expected_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env=expected_env_vars,
+        )
+
+    @patch("subprocess.run")
+    @patch("os.environ.copy")
+    def test_trigger_leader_election(self, mock_environ_copy, mock_subprocess_run):
+        kafka_path = "/path/to/kafka"
+        bootstrap_servers = "localhost:9092"
+        kafka_heap_opts = "-Xmx1G"
+        demoting_plan = {"broker_id": 1}
+
+        # Mock subprocess.run() method behavior
+        mock_subprocess_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Leader election successful",
+            stderr="",
+        )
+
+        demoter = Demoter(
+            kafka_path=kafka_path,
+            bootstrap_servers=bootstrap_servers,
+            kafka_heap_opts=kafka_heap_opts,
+        )
+        demoter._trigger_leader_election(demoting_plan)
+
+        # Generate the command and expected environment variables
+        expected_command = "{}/bin/kafka-leader-election.sh --admin.config {} --bootstrap-server {} --election-type PREFERRED --path-to-json-file {}".format(
+            kafka_path,
+            demoter.admin_config_tmp_file.name,
+            bootstrap_servers,
+            demoter.partitions_temp_filepath,
+        )
+
+        expected_env_vars = os.environ.copy()
+        expected_env_vars["KAFKA_HEAP_OPTS"] = kafka_heap_opts
+
+        # Assert that subprocess.run() is called with correct parameters
+        mock_subprocess_run.assert_called_with(
+            expected_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env=expected_env_vars,
+        )
+
     def test_get_partition_leaders_by_broker_id(self):
         demoter = Demoter()
         existing_topics = [
@@ -205,7 +424,7 @@ class TestDemoter(unittest.TestCase):
             # desired_records = {"record1", "record2"}
             # mock_poll.return_value = sample_records
 
-            # Create an instance of YourClass
+            # Create an instance of Demoter
             demoter = Demoter()
 
             # Call the _consume_latest_record_per_key method with various keys

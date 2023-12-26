@@ -60,6 +60,7 @@ class Demoter(object):
             bootstrap_servers=self.bootstrap_servers,
             compression_type="lz4",
             on_delivery=self._produce_error_callback,
+            retries=5,
         )
 
     def _produce_record(self, key, value):

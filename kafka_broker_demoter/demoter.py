@@ -14,6 +14,7 @@ from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
     ChangeReplicaAssignmentError,
     PreferredLeaderMismatchCurrentLeader,
+    ProduceRecordError,
     TriggerLeaderElectionError,
 )
 
@@ -38,7 +39,9 @@ class Demoter(object):
         self.admin_client = None
         self.partitions_temp_filepath = None
         self.admin_config_tmp_file = None
-        self.admin_config_content = "default.api.timeout.ms=240000\nrequest.timeout.ms=120000"
+        self.admin_config_content = (
+            "default.api.timeout.ms=240000\nrequest.timeout.ms=120000"
+        )
 
     @property
     def _get_admin_client(self):
@@ -54,7 +57,9 @@ class Demoter(object):
 
     def _get_producer(self):
         return KafkaProducer(
-            bootstrap_servers=self.bootstrap_servers, compression_type="lz4"
+            bootstrap_servers=self.bootstrap_servers,
+            compression_type="lz4",
+            on_delivery=self._produce_error_callback,
         )
 
     def _produce_record(self, key, value):
@@ -65,6 +70,14 @@ class Demoter(object):
         producer.flush()
         producer.close()
         logger.info("Produced record with key {} and value {}".format(key, value))
+
+    def _produce_error_callback(self, err, msg):
+        if err is not None:
+            # Handle the error and log it
+            logger.error("Error occurred while delivering message: {}".format(err))
+            raise ProduceRecordError(
+                "Error occurred while delivering message: {}".format(err)
+            )
 
     def _remove_non_existent_topics(self, broker_id):
         """

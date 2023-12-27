@@ -10,7 +10,7 @@ __location__ = os.path.join(
     os.getcwd(), os.path.dirname(inspect.getfile(inspect.currentframe()))
 )
 
-version = "1.1.16"
+version = "1.1.17"
 
 this_directory = Path(__file__).parent
 long_description = (this_directory / "README.md").read_text()

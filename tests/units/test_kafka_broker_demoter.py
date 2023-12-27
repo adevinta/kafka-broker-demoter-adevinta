@@ -1,16 +1,18 @@
 import json
 import os
 import unittest
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, Mock, call, patch
 
 from kafka.admin import NewTopic
 from kafka.consumer.fetcher import ConsumerRecord
+from tenacity import stop_after_attempt
 
 # Import the class you want to test (assuming it's in a separate module)
 from kafka_broker_demoter.demoter import BrokerStatusError, Demoter
-from kafka_broker_demoter.exceptions import PreferredLeaderMismatchCurrentLeader
-
-# from kafka import KafkaConsumer
+from kafka_broker_demoter.exceptions import (
+    PreferredLeaderMismatchCurrentLeader,
+    ProduceRecordError,
+)
 
 
 class TestDemoter(unittest.TestCase):
@@ -88,27 +90,25 @@ class TestDemoter(unittest.TestCase):
         ):
             with patch.object(
                 Demoter, "_change_replica_assignment"
-            ) as mock_change_replica_assignment:
-                with patch.object(
-                    Demoter, "_trigger_leader_election"
-                ) as mock_trigger_leader_election:
-                    with patch.object(
-                        Demoter, "_produce_record"
-                    ) as mock_produce_record:
-                        # Create an instance of Demoter
-                        demoter = Demoter()
+            ) as mock_change_replica_assignment, patch.object(
+                Demoter, "_trigger_leader_election"
+            ) as mock_trigger_leader_election, patch.object(
+                Demoter, "_produce_record"
+            ) as mock_produce_record:
+                # Create an instance of Demoter
+                demoter = Demoter()
 
-                        # Call the demote_rollback() method
-                        demoter.demote_rollback(broker_id)
+                # Call the demote_rollback() method
+                demoter.demote_rollback(broker_id)
 
-                        # Verify the method calls and assertions
-                        mock_change_replica_assignment.assert_called_once_with(
-                            previous_partitions_state
-                        )
-                        mock_trigger_leader_election.assert_called_once_with(
-                            previous_partitions_state
-                        )
-                        mock_produce_record.assert_called_once_with(broker_id, None)
+                # Verify the method calls and assertions
+                mock_change_replica_assignment.assert_called_once_with(
+                    previous_partitions_state
+                )
+                mock_trigger_leader_election.assert_called_once_with(
+                    previous_partitions_state
+                )
+                mock_produce_record.assert_called_once_with(broker_id, None)
 
     def test_demote_rollback_failure(self):
         # Dummy data
@@ -321,25 +321,33 @@ class TestDemoter(unittest.TestCase):
 
     def test_produce_record(self):
         demoter = Demoter()
-        demoter._get_producer = MagicMock()
 
-        key = "test-key"
-        value = {"field1": "value1", "field2": "value2"}
+        # Creating a mock producer and future
+        mock_future = Mock()
+        mock_future.get.return_value = Mock()  # Mocking the returned record metadata
 
-        demoter._get_producer.return_value.send = MagicMock()
-        demoter._get_producer.return_value.flush = MagicMock()
-        demoter._get_producer.return_value.close = MagicMock()
+        with patch.object(Demoter, "_get_producer") as mock_producer:
+            mock_producer.return_value.send.return_value = mock_future
+            demoter._produce_record("key", "value")
 
-        demoter._produce_record(key, value)
-
-        demoter._get_producer.assert_called_once()
-        demoter._get_producer.return_value.send.assert_called_once_with(
+        # Asserting that the producer's send method is called with the expected parameters
+        mock_producer.return_value.send.assert_called_once_with(
             demoter.topic_tracker,
-            key="test-key".encode("utf-8"),
-            value=json.dumps(value).encode("utf-8"),
+            key=b"key",
+            value=b'"value"',
         )
-        demoter._get_producer.return_value.flush.assert_called_once()
-        demoter._get_producer.return_value.close.assert_called_once()
+
+    def test_produce_record_exception(self):
+        demoter = Demoter()
+
+        demoter._produce_record.retry.stop = stop_after_attempt(1)
+        mock_future = Mock()
+        mock_future.get.side_effect = ProduceRecordError
+
+        with patch.object(Demoter, "_get_producer") as mock_producer:
+            mock_producer.return_value.send.return_value = mock_future
+            with self.assertRaises(ProduceRecordError):
+                demoter._produce_record("key", "value")
 
     def test_remove_non_existent_topics(self):
         demoter = Demoter()

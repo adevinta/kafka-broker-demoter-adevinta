@@ -9,6 +9,7 @@ import tempfile
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
+from tenacity import retry, stop_after_delay, wait_fixed
 
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
@@ -59,26 +60,26 @@ class Demoter(object):
         return KafkaProducer(
             bootstrap_servers=self.bootstrap_servers,
             compression_type="lz4",
-            on_delivery=self._produce_error_callback,
-            retries=5,
+            retries=3,
         )
 
+    @retry(stop=stop_after_delay(6), wait=wait_fixed(1), reraise=True)
     def _produce_record(self, key, value):
         serialized_key = str(key).encode("utf-8")
         serialized_value = json.dumps(value).encode("utf-8")
-        producer = self._get_producer()
-        producer.send(self.topic_tracker, key=serialized_key, value=serialized_value)
-        producer.flush()
-        producer.close()
-        logger.info("Produced record with key {} and value {}".format(key, value))
-
-    def _produce_error_callback(self, err, msg):
-        if err is not None:
-            # Handle the error and log it
-            logger.error("Error occurred while delivering message: {}".format(err))
-            raise ProduceRecordError(
-                "Error occurred while delivering message: {}".format(err)
+        try:
+            producer = self._get_producer()
+            future = producer.send(
+                self.topic_tracker, key=serialized_key, value=serialized_value
             )
+            future.get(timeout=10)
+        except Exception as e:
+            logger.error("Failed to produce message: {}, trying again...".format(e))
+            raise ProduceRecordError
+
+        logger.info(
+            "Successful produced record with key {} and value {}".format(key, value)
+        )
 
     def _remove_non_existent_topics(self, broker_id):
         """

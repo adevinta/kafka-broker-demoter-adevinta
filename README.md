@@ -1,4 +1,5 @@
 # Kafka Broker Demoter
+A broker demotion in Kafka refers to intentionally reducing a broker's leadership role in a Kafka cluster. It involves reassigning partition leaders to distribute leadership responsibilities across brokers. During this process, only the leadership of the partitions is transferred and not the actual data. Consequently, after the demotion is complete, the demoted broker will no longer be a leader for any partitions.
 
 Kafka Broker Demoter is a script that allows you to demote Kafka brokers and roll back the changes as needed. This script can be installed via `pip` by running the following command:
 

@@ -9,10 +9,7 @@ from tenacity import stop_after_attempt
 
 # Import the class you want to test (assuming it's in a separate module)
 from kafka_broker_demoter.demoter import BrokerStatusError, Demoter
-from kafka_broker_demoter.exceptions import (
-    PreferredLeaderMismatchCurrentLeader,
-    ProduceRecordError,
-)
+from kafka_broker_demoter.exceptions import ProduceRecordError
 
 
 class TestDemoter(unittest.TestCase):
@@ -268,18 +265,6 @@ class TestDemoter(unittest.TestCase):
                     ]
                 },
             )
-        # Mismatch current leader and preferred leader
-        existing_topics = [
-            {
-                "topic": "topic1",
-                "partitions": [{"partition": 0, "leader": 1, "replicas": [2, 2, 3]}],
-            }
-        ]
-        with patch.object(
-            Demoter, "_get_topics_metadata", return_value=existing_topics
-        ):
-            with self.assertRaises(PreferredLeaderMismatchCurrentLeader):
-                demoter._get_partition_leaders_by_broker_id(1)
 
     def test_demoting_proposal(self):
         demoter = Demoter()

@@ -14,7 +14,6 @@ from tenacity import retry, stop_after_delay, wait_fixed
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
     ChangeReplicaAssignmentError,
-    PreferredLeaderMismatchCurrentLeader,
     ProduceRecordError,
     TriggerLeaderElectionError,
 )
@@ -163,9 +162,6 @@ class Demoter(object):
         Returns:
             A dictionary containing the partitions with their leaders.
 
-        Raises:
-            PreferredLeaderMismatchCurrentLeader: If the leader and the first replica of a partition do not match.
-
         Note:
             This method iterates over the topics obtained from the `_get_topics_metadata` method. For each topic,
             it retrieves the topic name, partition ID, leader, and replicas. If the leader matches the specified
@@ -182,8 +178,6 @@ class Demoter(object):
                 leader = partition["leader"]
                 replicas = partition["replicas"]
                 if broker_id == leader and len(replicas) > 1:
-                    if leader != replicas[0]:
-                        raise PreferredLeaderMismatchCurrentLeader
                     partitions["partitions"].append(
                         {
                             "topic": topic_name,

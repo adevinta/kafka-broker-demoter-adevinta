@@ -1,7 +1,3 @@
-class PreferredLeaderMismatchCurrentLeader(Exception):
-    pass
-
-
 class BrokerStatusError(Exception):
     pass
 

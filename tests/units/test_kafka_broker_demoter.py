@@ -9,7 +9,7 @@ from tenacity import stop_after_attempt
 
 # Import the class you want to test (assuming it's in a separate module)
 from kafka_broker_demoter.demoter import BrokerStatusError, Demoter
-from kafka_broker_demoter.exceptions import ProduceRecordError
+from kafka_broker_demoter.exceptions import ProduceRecordError, RecordNotFoundError
 
 
 class TestDemoter(unittest.TestCase):
@@ -24,7 +24,9 @@ class TestDemoter(unittest.TestCase):
         with patch.object(
             demoter, "_create_topic", return_value=None
         ) as mock_create_topic, patch.object(
-            demoter, "_consume_latest_record_per_key", return_value=None
+            demoter,
+            "_consume_latest_record_per_key",
+            side_effect=[None, {"foo": "var"}],
         ) as mock_consume_latest_record_per_key, patch.object(
             demoter,
             "_get_partition_leaders_by_broker_id",
@@ -71,9 +73,22 @@ class TestDemoter(unittest.TestCase):
                     call._save_rollback_plan(
                         broker_id, get_partition_leaders_by_broker_id_result
                     ),
+                    call._consume_latest_record_per_key(broker_id),
                 ],
                 any_order=False,
             )
+
+    def test_demote_exceptions_demote_ongoing_operation(self):
+        # Create an instance of Demoter
+        broker_id = 45
+        demoter = Demoter()
+
+        # Patch the necessary methods to simulate the scenario
+        with patch.object(demoter, "_create_topic", return_value=None), patch.object(
+            demoter, "_consume_latest_record_per_key", return_value={"foo": "var"}
+        ):
+            with self.assertRaises(BrokerStatusError):
+                demoter.demote(broker_id)
 
     def test_demote_rollback_success(self):
         # Dummy data
@@ -91,7 +106,9 @@ class TestDemoter(unittest.TestCase):
                 Demoter, "_trigger_leader_election"
             ) as mock_trigger_leader_election, patch.object(
                 Demoter, "_produce_record"
-            ) as mock_produce_record:
+            ) as mock_produce_record, patch.object(
+                Demoter, "_consume_latest_record_per_key", return_value=None
+            ):
                 # Create an instance of Demoter
                 demoter = Demoter()
 
@@ -107,11 +124,12 @@ class TestDemoter(unittest.TestCase):
                 )
                 mock_produce_record.assert_called_once_with(broker_id, None)
 
-    def test_demote_rollback_failure(self):
+    def test_demote_rollback_failure_nothing_to_rollback(self):
         # Dummy data
         broker_id = 123
         previous_partitions_state = None
 
+        # Nothing to rollback
         with patch.object(
             Demoter,
             "_remove_non_existent_topics",
@@ -120,6 +138,34 @@ class TestDemoter(unittest.TestCase):
             with self.assertRaises(BrokerStatusError):
                 # Create an instance of Demoter
                 demoter = Demoter()
+
+                # Call the demote_rollback() method
+                demoter.demote_rollback(broker_id)
+
+    def test_demote_rollback_failure_saving_record(self):
+        # Dummy data
+        broker_id = 123
+        previous_partitions_state = {"foo": "var"}
+
+        # Nothing to rollback
+        with patch.object(
+            Demoter,
+            "_remove_non_existent_topics",
+            return_value=previous_partitions_state,
+        ), patch.object(
+            Demoter, "_consume_latest_record_per_key", return_value={"foo": "bar"}
+        ), patch.object(
+            Demoter, "_change_replica_assignment"
+        ), patch.object(
+            Demoter, "_trigger_leader_election"
+        ), patch.object(
+            Demoter, "_produce_record"
+        ):
+            # Record was not saved exception
+            with self.assertRaises(RecordNotFoundError):
+                # Create an instance of Demoter
+                demoter = Demoter()
+                demoter.demote_rollback.retry.stop = stop_after_attempt(1)
 
                 # Call the demote_rollback() method
                 demoter.demote_rollback(broker_id)

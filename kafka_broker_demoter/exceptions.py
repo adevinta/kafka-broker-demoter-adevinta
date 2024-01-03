@@ -1,3 +1,7 @@
+class RecordNotFoundError(Exception):
+    pass
+
+
 class BrokerStatusError(Exception):
     pass
 

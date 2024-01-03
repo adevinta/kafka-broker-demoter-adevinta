@@ -9,12 +9,13 @@ import tempfile
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
-from tenacity import retry, stop_after_delay, wait_fixed
+from tenacity import retry, retry_if_exception_type, stop_after_delay, wait_fixed
 
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
     ChangeReplicaAssignmentError,
     ProduceRecordError,
+    RecordNotFoundError,
     TriggerLeaderElectionError,
 )
 
@@ -243,6 +244,12 @@ class Demoter(object):
                 new_topics=[topic], validate_only=False
             )
 
+    @retry(
+        stop=stop_after_delay(6),
+        wait=wait_fixed(1),
+        reraise=True,
+        retry=retry_if_exception_type(RecordNotFoundError),
+    )
     def demote(self, broker_id):
         """
         Demotes a broker by reassigning partition leaders and triggering leader election.
@@ -293,6 +300,21 @@ class Demoter(object):
             self._trigger_leader_election(demoted_partitions_state)
             self._save_rollback_plan(broker_id, current_partitions_state)
 
+            # Make sure record was saved
+            if self._consume_latest_record_per_key(broker_id) is None:
+                logger.warning(
+                    "It seems the rollback plan for broker {} was not saved, trying again...".format(
+                        broker_id
+                    )
+                )
+                raise RecordNotFoundError
+
+    @retry(
+        stop=stop_after_delay(6),
+        wait=wait_fixed(1),
+        reraise=True,
+        retry=retry_if_exception_type(RecordNotFoundError),
+    )
     def demote_rollback(self, broker_id):
         """
         Rolls back the demotion of a broker.
@@ -325,6 +347,14 @@ class Demoter(object):
         self._change_replica_assignment(previous_partitions_state)
         self._trigger_leader_election(previous_partitions_state)
         self._produce_record(broker_id, None)
+        # Make sure record was saved
+        if self._consume_latest_record_per_key(broker_id) is not None:
+            logger.warning(
+                "It seems the rollback plan for broker {} was not deleted, trying again...".format(
+                    broker_id
+                )
+            )
+            raise RecordNotFoundError
         logger.info(
             "Rollback plan for broker {} was successfully executed".format(broker_id)
         )

@@ -398,20 +398,6 @@ class TestDemoter(unittest.TestCase):
             with self.assertRaises(ProduceRecordError):
                 demoter._produce_record("key", "value")
 
-    def test_produce_record_exception_recordnotfound_error(self):
-        demoter = Demoter()
-
-        demoter._produce_record.retry.stop = stop_after_attempt(1)
-        mock_future = Mock()
-        mock_future.get.return_value = Mock()
-
-        with patch.object(Demoter, "_get_producer") as mock_producer, patch.object(
-            Demoter, "_consume_latest_record_per_key", side_effect=RecordNotFoundError
-        ):
-            mock_producer.return_value.send.return_value = mock_future
-            with self.assertRaises(RecordNotFoundError):
-                demoter._produce_record("key", "value")
-
     def test_remove_non_existent_topics(self):
         demoter = Demoter()
         broker_id = 1
@@ -515,6 +501,9 @@ class TestDemoter(unittest.TestCase):
 
             # Test with a key that is not present in the received records
             with self.assertRaises(RecordNotFoundError):
+                demoter._consume_latest_record_per_key.retry.stop = stop_after_attempt(
+                    1
+                )
                 demoter._consume_latest_record_per_key(4)
 
             # Test with a null record

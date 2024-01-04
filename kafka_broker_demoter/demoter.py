@@ -67,7 +67,7 @@ class Demoter(object):
         stop=stop_after_delay(6),
         wait=wait_fixed(1),
         reraise=True,
-        retry=retry_if_exception_type((RecordNotFoundError, ProduceRecordError)),
+        retry=retry_if_exception_type(ProduceRecordError),
     )
     def _produce_record(self, key, value):
         """
@@ -121,7 +121,7 @@ class Demoter(object):
         """
         partitions = self._consume_latest_record_per_key(broker_id)
         if partitions is None:
-            logger.debug("No partitions found for broker {}".format(broker_id))
+            logger.info("No partitions found for broker {}".format(broker_id))
             return None
 
         existing_topics = [topic["topic"] for topic in self._get_topics_metadata()]
@@ -143,6 +143,12 @@ class Demoter(object):
         )
         return consumer
 
+    @retry(
+        stop=stop_after_delay(8),
+        wait=wait_fixed(1),
+        reraise=True,
+        retry=retry_if_exception_type(RecordNotFoundError),
+    )
     def _consume_latest_record_per_key(self, key):
         """
         Consume and retrieve the latest record for a given key.
@@ -157,7 +163,7 @@ class Demoter(object):
             RecordNotFoundError: If no record is found for the given key.
         """
         consumer = self._get_consumer()
-        records = consumer.poll(timeout_ms=20000)
+        records = consumer.poll(timeout_ms=10000)
         latest_record_payload = {}
 
         for topic_partition, record_list in records.items():
@@ -171,7 +177,7 @@ class Demoter(object):
         if len(latest_record_payload) == 0:
             logger.warning("Latest record not found for key {}".format(key))
             raise RecordNotFoundError
-        logger.debug(
+        logger.info(
             "Latest record found for key {}: {}".format(key, latest_record_payload[key])
         )
         return latest_record_payload[key]
@@ -275,7 +281,7 @@ class Demoter(object):
                     )
                 )
         except RecordNotFoundError:
-            logger.debug(
+            logger.info(
                 "Ongoing or unfinished demote operation was not found for broker {}, proceeding to demote the broker".format(
                     broker_id
                 )

@@ -162,7 +162,6 @@ class Demoter(object):
         Raises:
             RecordNotFoundError: If no record is found for the given key.
         """
-        print("DSDSD\n")
         consumer = self._get_consumer()
         records = consumer.poll(timeout_ms=10000)
         latest_record_payload = {}

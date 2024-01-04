@@ -256,24 +256,31 @@ class Demoter(object):
 
     def demote(self, broker_id):
         """
-        Perform a demotion operation on a specific broker.
+        Demotes a broker by reassigning the partition leaders from the specified broker to other brokers.
+        If an ongoing or unfinished demote operation is found for the broker, a BrokerStatusError is raised.
+        If a RecordNotFoundError occurs while checking for ongoing demote operations, the broker is considered ready for demotion.
 
         Args:
-            broker_id: The ID of the broker to perform the demotion on.
-
-        Raises:
-            BrokerStatusError: If there is an ongoing or unfinished demote operation for the broker.
+            broker_id (int): The ID of the broker to be demoted.
 
         Returns:
-            None
+            None: If the broker is already demoted and no partition leaders are found.
         """
         self._create_topic()
-        if self._consume_latest_record_per_key(broker_id) is not None:
-            raise BrokerStatusError(
-                "Ongoing or unfinished demote operation was found for broker {}".format(
+        try:
+            if self._consume_latest_record_per_key(broker_id) is not None:
+                raise BrokerStatusError(
+                    "Ongoing or unfinished demote operation was found for broker {}".format(
+                        broker_id
+                    )
+                )
+        except RecordNotFoundError:
+            logger.debug(
+                "Ongoing or unfinished demote operation was not found for broker {}, proceeding to demote the broker".format(
                     broker_id
                 )
             )
+
         current_partitions_state = self._get_partition_leaders_by_broker_id(broker_id)
         if not current_partitions_state["partitions"]:
             logger.info(

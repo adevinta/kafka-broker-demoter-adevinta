@@ -75,6 +75,68 @@ class TestDemoter(unittest.TestCase):
                 any_order=False,
             )
 
+    def test_demote_successful_demote_operation_record_not_found_exception(self):
+        # Create an instance of Demoter
+        broker_id = 45
+        demoter = Demoter()
+        get_partition_leaders_by_broker_id_result = {"partitions": [1, 2, 3]}
+        get_demoting_proposal_result = {"a": 1}
+
+        # Patch the necessary methods to simulate the scenario
+        with patch.object(
+            demoter, "_create_topic", return_value=None
+        ) as mock_create_topic, patch.object(
+            demoter, "_consume_latest_record_per_key", side_effect=RecordNotFoundError
+        ) as mock_consume_latest_record_per_key, patch.object(
+            demoter,
+            "_get_partition_leaders_by_broker_id",
+            return_value=get_partition_leaders_by_broker_id_result,
+        ) as mock_get_partition_leaders_by_broker_id, patch.object(
+            demoter, "_get_demoting_proposal", return_value=get_demoting_proposal_result
+        ) as mock_get_demoting_proposal, patch.object(
+            demoter, "_change_replica_assignment"
+        ) as mock_change_replica_assignment, patch.object(
+            demoter, "_trigger_leader_election"
+        ) as mock_trigger_leader_election, patch.object(
+            demoter, "_save_rollback_plan"
+        ) as mock_save_rollback_plan:
+            # Check if the methods were called correctly in the expected orderi
+            mock = MagicMock()
+            mock.attach_mock(mock_create_topic, "_create_topic")
+            mock.attach_mock(
+                mock_consume_latest_record_per_key, "_consume_latest_record_per_key"
+            )
+            mock.attach_mock(
+                mock_get_partition_leaders_by_broker_id,
+                "_get_partition_leaders_by_broker_id",
+            )
+            mock.attach_mock(mock_get_demoting_proposal, "_get_demoting_proposal")
+            mock.attach_mock(
+                mock_change_replica_assignment, "_change_replica_assignment"
+            )
+            mock.attach_mock(mock_trigger_leader_election, "_trigger_leader_election")
+            mock.attach_mock(mock_save_rollback_plan, "_save_rollback_plan")
+
+            # Call the demote() method with a successful demote operation
+            demoter.demote(broker_id=broker_id)
+
+            mock.assert_has_calls(
+                [
+                    call._create_topic(),
+                    call._consume_latest_record_per_key(broker_id),
+                    call._get_partition_leaders_by_broker_id(broker_id),
+                    call._get_demoting_proposal(
+                        broker_id, get_partition_leaders_by_broker_id_result
+                    ),
+                    call._change_replica_assignment(get_demoting_proposal_result),
+                    call._trigger_leader_election(get_demoting_proposal_result),
+                    call._save_rollback_plan(
+                        broker_id, get_partition_leaders_by_broker_id_result
+                    ),
+                ],
+                any_order=False,
+            )
+
     def test_demote_rollback_success(self):
         # Dummy data
         broker_id = 123

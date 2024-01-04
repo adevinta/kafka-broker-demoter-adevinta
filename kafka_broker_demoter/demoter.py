@@ -8,8 +8,8 @@ import subprocess
 import tempfile
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
-from kafka.admin import NewTopic
-from tenacity import retry, retry_if_exception_type, stop_after_delay, wait_fixed
+from kafka.admin import NewTopics
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
@@ -64,7 +64,7 @@ class Demoter(object):
         )
 
     @retry(
-        stop=stop_after_delay(6),
+        stop=stop_after_attempt(6),
         wait=wait_fixed(1),
         reraise=True,
         retry=retry_if_exception_type(ProduceRecordError),
@@ -144,7 +144,7 @@ class Demoter(object):
         return consumer
 
     @retry(
-        stop=stop_after_delay(8),
+        stop=stop_after_attempt(8),
         wait=wait_fixed(1),
         reraise=True,
         retry=retry_if_exception_type(RecordNotFoundError),
@@ -162,6 +162,7 @@ class Demoter(object):
         Raises:
             RecordNotFoundError: If no record is found for the given key.
         """
+        print("DSDSD\n")
         consumer = self._get_consumer()
         records = consumer.poll(timeout_ms=10000)
         latest_record_payload = {}

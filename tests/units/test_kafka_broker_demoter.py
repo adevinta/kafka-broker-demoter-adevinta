@@ -24,9 +24,7 @@ class TestDemoter(unittest.TestCase):
         with patch.object(
             demoter, "_create_topic", return_value=None
         ) as mock_create_topic, patch.object(
-            demoter,
-            "_consume_latest_record_per_key",
-            side_effect=[None, {"foo": "var"}],
+            demoter, "_consume_latest_record_per_key", return_value=None
         ) as mock_consume_latest_record_per_key, patch.object(
             demoter,
             "_get_partition_leaders_by_broker_id",
@@ -73,22 +71,9 @@ class TestDemoter(unittest.TestCase):
                     call._save_rollback_plan(
                         broker_id, get_partition_leaders_by_broker_id_result
                     ),
-                    call._consume_latest_record_per_key(broker_id),
                 ],
                 any_order=False,
             )
-
-    def test_demote_exceptions_demote_ongoing_operation(self):
-        # Create an instance of Demoter
-        broker_id = 45
-        demoter = Demoter()
-
-        # Patch the necessary methods to simulate the scenario
-        with patch.object(demoter, "_create_topic", return_value=None), patch.object(
-            demoter, "_consume_latest_record_per_key", return_value={"foo": "var"}
-        ):
-            with self.assertRaises(BrokerStatusError):
-                demoter.demote(broker_id)
 
     def test_demote_rollback_success(self):
         # Dummy data
@@ -106,9 +91,7 @@ class TestDemoter(unittest.TestCase):
                 Demoter, "_trigger_leader_election"
             ) as mock_trigger_leader_election, patch.object(
                 Demoter, "_produce_record"
-            ) as mock_produce_record, patch.object(
-                Demoter, "_consume_latest_record_per_key", return_value=None
-            ):
+            ) as mock_produce_record:
                 # Create an instance of Demoter
                 demoter = Demoter()
 
@@ -124,12 +107,11 @@ class TestDemoter(unittest.TestCase):
                 )
                 mock_produce_record.assert_called_once_with(broker_id, None)
 
-    def test_demote_rollback_failure_nothing_to_rollback(self):
+    def test_demote_rollback_failure(self):
         # Dummy data
         broker_id = 123
         previous_partitions_state = None
 
-        # Nothing to rollback
         with patch.object(
             Demoter,
             "_remove_non_existent_topics",
@@ -138,34 +120,6 @@ class TestDemoter(unittest.TestCase):
             with self.assertRaises(BrokerStatusError):
                 # Create an instance of Demoter
                 demoter = Demoter()
-
-                # Call the demote_rollback() method
-                demoter.demote_rollback(broker_id)
-
-    def test_demote_rollback_failure_saving_record(self):
-        # Dummy data
-        broker_id = 123
-        previous_partitions_state = {"foo": "var"}
-
-        # Nothing to rollback
-        with patch.object(
-            Demoter,
-            "_remove_non_existent_topics",
-            return_value=previous_partitions_state,
-        ), patch.object(
-            Demoter, "_consume_latest_record_per_key", return_value={"foo": "bar"}
-        ), patch.object(
-            Demoter, "_change_replica_assignment"
-        ), patch.object(
-            Demoter, "_trigger_leader_election"
-        ), patch.object(
-            Demoter, "_produce_record"
-        ):
-            # Record was not saved exception
-            with self.assertRaises(RecordNotFoundError):
-                # Create an instance of Demoter
-                demoter = Demoter()
-                demoter.demote_rollback.retry.stop = stop_after_attempt(1)
 
                 # Call the demote_rollback() method
                 demoter.demote_rollback(broker_id)
@@ -357,7 +311,9 @@ class TestDemoter(unittest.TestCase):
         mock_future = Mock()
         mock_future.get.return_value = Mock()  # Mocking the returned record metadata
 
-        with patch.object(Demoter, "_get_producer") as mock_producer:
+        with patch.object(Demoter, "_get_producer") as mock_producer, patch.object(
+            Demoter, "_consume_latest_record_per_key"
+        ):
             mock_producer.return_value.send.return_value = mock_future
             demoter._produce_record("key", "value")
 
@@ -368,7 +324,7 @@ class TestDemoter(unittest.TestCase):
             value=b'"value"',
         )
 
-    def test_produce_record_exception(self):
+    def test_produce_record_exception_producerecord_error(self):
         demoter = Demoter()
 
         demoter._produce_record.retry.stop = stop_after_attempt(1)
@@ -378,6 +334,20 @@ class TestDemoter(unittest.TestCase):
         with patch.object(Demoter, "_get_producer") as mock_producer:
             mock_producer.return_value.send.return_value = mock_future
             with self.assertRaises(ProduceRecordError):
+                demoter._produce_record("key", "value")
+
+    def test_produce_record_exception_recordnotfound_error(self):
+        demoter = Demoter()
+
+        demoter._produce_record.retry.stop = stop_after_attempt(1)
+        mock_future = Mock()
+        mock_future.get.return_value = Mock()
+
+        with patch.object(Demoter, "_get_producer") as mock_producer, patch.object(
+            Demoter, "_consume_latest_record_per_key", side_effect=RecordNotFoundError
+        ):
+            mock_producer.return_value.send.return_value = mock_future
+            with self.assertRaises(RecordNotFoundError):
                 demoter._produce_record("key", "value")
 
     def test_remove_non_existent_topics(self):
@@ -453,16 +423,25 @@ class TestDemoter(unittest.TestCase):
                     serialized_value_size=0,
                     serialized_header_size=0,
                 ),
+                ConsumerRecord(
+                    topic="topic_name",
+                    partition=0,
+                    offset=2,
+                    timestamp=1602632033000,
+                    timestamp_type=0,
+                    key=b"35",
+                    value=b"null",
+                    headers=[],
+                    checksum=0,
+                    serialized_key_size=0,
+                    serialized_value_size=0,
+                    serialized_header_size=0,
+                ),
             ]
         }
 
         with patch.object(Demoter, "_get_consumer") as mock_get_consumer:
             mock_get_consumer.return_value.poll.return_value = sample_records
-
-            # Set the desired return value for consumer.poll()
-            # desired_records = {"record1", "record2"}
-            # mock_poll.return_value = sample_records
-
             # Create an instance of Demoter
             demoter = Demoter()
 
@@ -473,12 +452,10 @@ class TestDemoter(unittest.TestCase):
             self.assertEqual(result, expected_result)
 
             # Test with a key that is not present in the received records
-            result = demoter._consume_latest_record_per_key(4)
-            expected_result = None
-            self.assertEqual(result, expected_result)
+            with self.assertRaises(RecordNotFoundError):
+                demoter._consume_latest_record_per_key(4)
 
-            # Test with an empty record
-            demoter._get_consumer.poll.return_value = {}
-            result = demoter._consume_latest_record_per_key(2)
+            # Test with a null record
+            result = demoter._consume_latest_record_per_key(35)
             expected_result = None
             self.assertEqual(result, expected_result)

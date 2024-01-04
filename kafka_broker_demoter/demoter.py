@@ -63,8 +63,23 @@ class Demoter(object):
             retries=3,
         )
 
-    @retry(stop=stop_after_delay(6), wait=wait_fixed(1), reraise=True)
+    @retry(
+        stop=stop_after_delay(6),
+        wait=wait_fixed(1),
+        reraise=True,
+        retry=retry_if_exception_type((RecordNotFoundError, ProduceRecordError)),
+    )
     def _produce_record(self, key, value):
+        """
+        Retry producing a record with given key and value to a topic.
+
+        Args:
+            key: The key of the record.
+            value: The value of the record.
+
+        Raises:
+            ProduceRecordError: If the record fails to be produced after retries.
+        """
         serialized_key = str(key).encode("utf-8")
         serialized_value = json.dumps(value).encode("utf-8")
         try:
@@ -74,8 +89,11 @@ class Demoter(object):
             )
             future.get(timeout=10)
         except Exception as e:
-            logger.error("Failed to produce message: {}, trying again...".format(e))
+            logger.warning("Failed to produce message: {}, trying again...".format(e))
             raise ProduceRecordError
+
+        # Make sure record was saved
+        self._consume_latest_record_per_key(key)
 
         logger.info(
             "Successful produced record with key {} and value {}".format(key, value)
@@ -127,48 +145,52 @@ class Demoter(object):
 
     def _consume_latest_record_per_key(self, key):
         """
-        Retrieves the latest record for a given key from the consumer.
+        Consume and retrieve the latest record for a given key.
 
         Args:
-            key: The key to filter the records.
+            key: The key used to filter the records.
 
         Returns:
-            The latest record (deserialized JSON object) found for the given key.
+            dict: The latest record payload for the given key.
 
         Raises:
-            ValueError: If the record's key cannot be decoded as UTF-8 or parsed as an integer.
-
-        Note:
-            This method assumes that the consumer has already been configured and initialized.
-
+            RecordNotFoundError: If no record is found for the given key.
         """
         consumer = self._get_consumer()
         records = consumer.poll(timeout_ms=20000)
-        latest_record = None
+        latest_record_payload = {}
+
         for topic_partition, record_list in records.items():
             for record in record_list:
                 if int(record.key.decode("utf-8")) == key:
-                    latest_record = json.loads(record.value.decode("utf-8"))
-        logger.debug("Latest record found for key {}: {}".format(key, latest_record))
+                    latest_record_payload[key] = json.loads(
+                        record.value.decode("utf-8")
+                    )
         consumer.close()
-        return latest_record
+
+        if len(latest_record_payload) == 0:
+            logger.warning("Latest record not found for key {}".format(key))
+            raise RecordNotFoundError
+        logger.debug(
+            "Latest record found for key {}: {}".format(key, latest_record_payload[key])
+        )
+        return latest_record_payload[key]
 
     def _get_partition_leaders_by_broker_id(self, broker_id):
         """
-        Retrieves partition leaders by broker ID.
+        Retrieves partition leader information for a specified broker ID.
 
         Args:
-            broker_id: The ID of the broker.
+            broker_id (int): The ID of the broker to fetch partition leaders.
 
         Returns:
-            A dictionary containing the partitions with their leaders.
+            dict: A dictionary with partition information for the specified broker as leader.
 
-        Note:
-            This method iterates over the topics obtained from the `_get_topics_metadata` method. For each topic,
-            it retrieves the topic name, partition ID, leader, and replicas. If the leader matches the specified
-            broker ID and there are more than one replica, it checks if the leader and the first replica match.
-            If not, it raises the `PreferredLeaderMismatchCurrentLeader` exception. Finally, it appends the partition
-            information to the `partitions` list. The method returns a dictionary containing the partitions and their leaders.
+        This method retrieves partition leader information for a specific broker in a Kafka cluster.
+        It filters the topics and partitions in the cluster, storing relevant information (topic name, partition ID, and replica IDs)
+        only for partitions where the specified broker is the leader.
+
+        Note: This method relies on other helper methods, such as `_get_topics_metadata()`, to fetch the necessary metadata.
 
         """
         partitions = {"partitions": []}
@@ -190,20 +212,14 @@ class Demoter(object):
 
     def _get_demoting_proposal(self, broker_id, current_partitions_state):
         """
-        Generates a proposal for demoting a broker.
+        Get a demoting proposal for the specified broker by reassigning replicas.
 
         Args:
-            broker_id: The ID of the broker to be demoted.
-            current_partitions_state: The current state of partitions.
+            broker_id: The ID of the broker to generate the demoting proposal for.
+            current_partitions_state: The current state of the partitions.
 
         Returns:
-            A new partition state with the broker demotion proposal.
-
-        Note:
-            This method produces a new partition state by creating a deep copy of the current partitions state.
-            It then iterates through each partition and rearranges the replicas by moving the last replica to the
-            beginning of the list and shifting the remaining replicas to the right. This effectively demotes the
-            specified broker's replica to the last position. The method returns the updated partition state.
+            dict: A demoting proposal with reassigned replicas.
 
         """
         demoting_plan = copy.deepcopy(current_partitions_state)
@@ -215,16 +231,10 @@ class Demoter(object):
 
     def _create_topic(self):
         """
-        Creates a new topic for tracking broker demotion rollback.
+        Create a new topic for tracking broker demotion rollback, if it doesn't already exist.
 
         Returns:
             None
-
-        Note:
-            This method checks if the topic specified in `self.topic_tracker` exists in the Kafka cluster.
-            If the topic does not exist, it creates a new topic with the specified name, number of partitions,
-            replication factor, and topic configuration. The creation of the topic is done through the admin client
-            obtained from `_get_admin_client` method.
 
         """
         topics = self._get_admin_client.list_topics()
@@ -244,38 +254,18 @@ class Demoter(object):
                 new_topics=[topic], validate_only=False
             )
 
-    @retry(
-        stop=stop_after_delay(6),
-        wait=wait_fixed(1),
-        reraise=True,
-        retry=retry_if_exception_type(RecordNotFoundError),
-    )
     def demote(self, broker_id):
         """
-        Demotes a broker by reassigning partition leaders and triggering leader election.
+        Perform a demotion operation on a specific broker.
 
         Args:
-            broker_id: The ID of the broker to be demoted.
+            broker_id: The ID of the broker to perform the demotion on.
+
+        Raises:
+            BrokerStatusError: If there is an ongoing or unfinished demote operation for the broker.
 
         Returns:
             None
-
-        Raises:
-            BrokerStatusError: If an ongoing or unfinished demote operation is found for the specified broker.
-
-        Note:
-            This method performs the following steps to demote a broker:
-            1. Calls the `_create_topic` method to create a topic for tracking broker demotion rollback.
-            2. Checks if there is an ongoing or unfinished demote operation for the specified broker by calling
-               the `_consume_latest_record_per_key` method. If such an operation exists, it raises a `BrokerStatusError`.
-            3. Retrieves the current partition state (partition leaders) for the specified broker by calling
-               the `_get_partition_leaders_by_broker_id` method.
-            4. If there are no partition leaders for the broker, it logs a message and returns.
-            5. Otherwise, it generates the proposed state of demoted partitions using the `_get_demoting_proposal` method.
-            6. Calls the `_change_replica_assignment` method to reassign replica assignments according to the proposed state.
-            7. Triggers leader election for the demoted partitions using the `_trigger_leader_election` method.
-            8. Saves the rollback plan for the demotion operation by calling the `_save_rollback_plan` method.
-
         """
         self._create_topic()
         if self._consume_latest_record_per_key(broker_id) is not None:
@@ -300,42 +290,18 @@ class Demoter(object):
             self._trigger_leader_election(demoted_partitions_state)
             self._save_rollback_plan(broker_id, current_partitions_state)
 
-            # Make sure record was saved
-            if self._consume_latest_record_per_key(broker_id) is None:
-                logger.warning(
-                    "It seems the rollback plan for broker {} was not saved, trying again...".format(
-                        broker_id
-                    )
-                )
-                raise RecordNotFoundError
-
-    @retry(
-        stop=stop_after_delay(6),
-        wait=wait_fixed(1),
-        reraise=True,
-        retry=retry_if_exception_type(RecordNotFoundError),
-    )
     def demote_rollback(self, broker_id):
         """
-        Rolls back the demotion of a broker.
+        Perform a rollback for the previous demote operation on a specific broker.
 
         Args:
-            broker_id: The ID of the broker to roll back the demotion for.
+            broker_id: The ID of the broker to rollback the demotion for.
+
+        Raises:
+            BrokerStatusError: If the previous demote operation on the broker was not found.
 
         Returns:
             None
-
-        Raises:
-            BrokerStatusError: If the previous demotion operation for the specified broker is not found.
-
-        Note:
-            This method performs the following steps to roll back the demotion of a broker:
-            1. Calls the `_remove_non_existent_topics` method to remove any topic that was deleted during the demotion process as an non existen topic in hte json list will make the process to fail
-            2. If the previous partition state is not found, it raises a `BrokerStatusError`.
-            3. Calls the `_change_replica_assignment` method to reassign replica assignments according to the previous state.
-            4. Triggers leader election for the restored partitions using the `_trigger_leader_election` method.
-            5. Calls the `_produce_record` method to produce a record, indicating the rollback operation was executed.
-
         """
         previous_partitions_state = self._remove_non_existent_topics(broker_id)
         if previous_partitions_state is None:
@@ -347,14 +313,6 @@ class Demoter(object):
         self._change_replica_assignment(previous_partitions_state)
         self._trigger_leader_election(previous_partitions_state)
         self._produce_record(broker_id, None)
-        # Make sure record was saved
-        if self._consume_latest_record_per_key(broker_id) is not None:
-            logger.warning(
-                "It seems the rollback plan for broker {} was not deleted, trying again...".format(
-                    broker_id
-                )
-            )
-            raise RecordNotFoundError
         logger.info(
             "Rollback plan for broker {} was successfully executed".format(broker_id)
         )
@@ -392,23 +350,16 @@ class Demoter(object):
 
     def _change_replica_assignment(self, demoting_plan):
         """
-        Changes the replica assignment according to a demoting plan.
+        Change the replica assignment of partitions based on the provided demoting plan.
 
         Args:
-            demoting_plan: A dictionary representing the demoting plan, which contains the new replica assignments for
-                           each topic and partition.
+            demoting_plan (dict): A dictionary containing the demoting plan.
 
         Raises:
-            ChangeReplicaAssignmentError: If there is an error executing the change replica assignment command.
+            ChangeReplicaAssignmentError: If an error occurs during the replica assignment change.
 
-        Note:
-            This method performs the following steps:
-            1. Generates a temporary file with the demoting plan contents using the `_generate_tempfile_with_json_content` method.
-            2. Constructs the command to execute the `kafka-reassign-partitions.sh` script with the specified options.
-            3. Sets the `KAFKA_HEAP_OPTS` environment variable to the `kafka_heap_opts` value.
-            4. Executes the command using the `subprocess.run` function, capturing the output and setting it as text.
-            5. If the return code of the command is not 0, it raises a `ChangeReplicaAssignmentError` with the stripped
-              output as the error message.
+        Returns:
+            None
 
         """
         demoting_plan_filepath = self._generate_tempfile_with_json_content(
@@ -428,18 +379,13 @@ class Demoter(object):
 
     def _generate_tmpfile_with_admin_configs(self):
         """
-        Generates a temporary file with the admin configurations.
+        Generate a temporary file containing the admin configurations.
+
+        If the temporary file doesn't already exist, it will be created. The admin configurations
+        are written to the file, and the file is closed before returning its name.
 
         Returns:
-            str: The name of the temporary file.
-
-        Note:
-            This method performs the following steps:
-            1. If the `admin_config_tmp_file` attribute is `None`, it creates a new temporary file using the
-              `tempfile.NamedTemporaryFile` function and assigns it to the `admin_config_tmp_file` attribute.
-            2. Writes the admin_config_content to the temporary file as bytes.
-            3. Closes the temporary file.
-            4. Returns the name of the temporary file.
+            str: The path/name of the temporary file.
 
         """
         if self.admin_config_tmp_file is None:
@@ -451,26 +397,19 @@ class Demoter(object):
 
     def _trigger_leader_election(self, demoting_plan):
         """
-        Triggers leader election for a demoting plan.
+        Trigger a leader election using the demoting plan.
+
+        This method runs the `kafka-leader-election.sh` script with the provided demoting plan.
+        The command is executed using the provided Kafka installation's path, the generated admin
+        configurations, the bootstrap servers, and the path to the temporary file containing
+        the demoting plan in JSON format.
 
         Args:
-            demoting_plan (dict): The demoting plan specifying the partition and its new leader.
+            demoting_plan (dict or list): A dictionary or list representation of the demoting plan.
 
         Raises:
             TriggerLeaderElectionError: If the leader election fails.
 
-        Returns:
-            None
-
-        Note:
-            This method performs the following steps:
-            1. Generates a temporary file using the `_generate_tempfile_with_json_content` method and assigns
-              the file path to `demoting_plan_filepath`.
-            2. Constructs the leader election command using the provided Kafka path, admin configs file,
-              bootstrap servers, and demoting plan file path.
-            3. Sets the `KAFKA_HEAP_OPTS` environment variable to `self.kafka_heap_opts`.
-            4. Executes the leader election command using `subprocess.run`.
-            5. If the return code is not 0, logs an error and raises a `TriggerLeaderElectionError`.
         """
         demoting_plan_filepath = self._generate_tempfile_with_json_content(
             demoting_plan

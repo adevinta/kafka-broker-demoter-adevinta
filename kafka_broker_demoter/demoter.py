@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
-from kafka.admin import NewTopics
+from kafka.admin import NewTopic
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from kafka_broker_demoter.exceptions import (

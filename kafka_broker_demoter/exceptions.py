@@ -1,3 +1,11 @@
+class SetBrokerThrottleError(Exception):
+    pass
+
+
+class SetTopicThrottleError(Exception):
+    pass
+
+
 class RecordNotFoundError(Exception):
     pass
 

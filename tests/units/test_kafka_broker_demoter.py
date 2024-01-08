@@ -16,6 +16,7 @@ class TestDemoter(unittest.TestCase):
     def test_demote_successful_demote_operation(self):
         # Create an instance of Demoter
         broker_id = 45
+        throttle = 10000000
         demoter = Demoter()
         get_partition_leaders_by_broker_id_result = {"partitions": [1, 2, 3]}
         get_demoting_proposal_result = {"a": 1}
@@ -37,7 +38,9 @@ class TestDemoter(unittest.TestCase):
             demoter, "_trigger_leader_election"
         ) as mock_trigger_leader_election, patch.object(
             demoter, "_save_rollback_plan"
-        ) as mock_save_rollback_plan:
+        ) as mock_save_rollback_plan, patch.object(
+            demoter, "_set_throttles"
+        ) as mock_set_throttles:
             # Check if the methods were called correctly in the expected orderi
             mock = MagicMock()
             mock.attach_mock(mock_create_topic, "_create_topic")
@@ -54,9 +57,10 @@ class TestDemoter(unittest.TestCase):
             )
             mock.attach_mock(mock_trigger_leader_election, "_trigger_leader_election")
             mock.attach_mock(mock_save_rollback_plan, "_save_rollback_plan")
+            mock.attach_mock(mock_set_throttles, "_set_throttles")
 
             # Call the demote() method with a successful demote operation
-            demoter.demote(broker_id=broker_id)
+            demoter.demote(broker_id, throttle)
 
             mock.assert_has_calls(
                 [
@@ -71,13 +75,29 @@ class TestDemoter(unittest.TestCase):
                     call._save_rollback_plan(
                         broker_id, get_partition_leaders_by_broker_id_result
                     ),
+                    call._set_throttles(broker_id, throttle),
                 ],
                 any_order=False,
             )
 
+    def test_demote_exception_due_to_ongoing_demote(self):
+        # Create an instance of Demoter
+        broker_id = 45
+        throttle = 10000000
+        demoter = Demoter()
+
+        # Patch the necessary methods to simulate the scenario
+        with patch.object(demoter, "_create_topic", return_value=None), patch.object(
+            demoter, "_consume_latest_record_per_key", return_value={"foo": "var"}
+        ):
+            with self.assertRaises(BrokerStatusError):
+                # Create an instance of Demoter
+                demoter.demote(broker_id, throttle)
+
     def test_demote_successful_demote_operation_record_not_found_exception(self):
         # Create an instance of Demoter
         broker_id = 45
+        throttle = 10000000
         demoter = Demoter()
         get_partition_leaders_by_broker_id_result = {"partitions": [1, 2, 3]}
         get_demoting_proposal_result = {"a": 1}
@@ -99,7 +119,9 @@ class TestDemoter(unittest.TestCase):
             demoter, "_trigger_leader_election"
         ) as mock_trigger_leader_election, patch.object(
             demoter, "_save_rollback_plan"
-        ) as mock_save_rollback_plan:
+        ) as mock_save_rollback_plan, patch.object(
+            demoter, "_set_throttles"
+        ) as mock_set_throttles:
             # Check if the methods were called correctly in the expected orderi
             mock = MagicMock()
             mock.attach_mock(mock_create_topic, "_create_topic")
@@ -116,9 +138,10 @@ class TestDemoter(unittest.TestCase):
             )
             mock.attach_mock(mock_trigger_leader_election, "_trigger_leader_election")
             mock.attach_mock(mock_save_rollback_plan, "_save_rollback_plan")
+            mock.attach_mock(mock_set_throttles, "_set_throttles")
 
             # Call the demote() method with a successful demote operation
-            demoter.demote(broker_id=broker_id)
+            demoter.demote(broker_id, throttle)
 
             mock.assert_has_calls(
                 [
@@ -133,13 +156,20 @@ class TestDemoter(unittest.TestCase):
                     call._save_rollback_plan(
                         broker_id, get_partition_leaders_by_broker_id_result
                     ),
+                    call._set_throttles(broker_id, throttle),
                 ],
                 any_order=False,
             )
 
+    # def test_update_throttle_success(self):
+    #    # Dummy data
+    #    broker_id = 123
+    #    remove_throttle = True
+
     def test_demote_rollback_success(self):
         # Dummy data
         broker_id = 123
+        remove_throttle = True
         previous_partitions_state = "previous_state"
 
         with patch.object(
@@ -153,12 +183,14 @@ class TestDemoter(unittest.TestCase):
                 Demoter, "_trigger_leader_election"
             ) as mock_trigger_leader_election, patch.object(
                 Demoter, "_produce_record"
-            ) as mock_produce_record:
+            ) as mock_produce_record, patch.object(
+                Demoter, "_unset_throttles"
+            ) as mock_unset_throttles:
                 # Create an instance of Demoter
                 demoter = Demoter()
 
                 # Call the demote_rollback() method
-                demoter.demote_rollback(broker_id)
+                demoter.demote_rollback(broker_id, remove_throttle)
 
                 # Verify the method calls and assertions
                 mock_change_replica_assignment.assert_called_once_with(
@@ -168,10 +200,12 @@ class TestDemoter(unittest.TestCase):
                     previous_partitions_state
                 )
                 mock_produce_record.assert_called_once_with(broker_id, None)
+                mock_unset_throttles.assert_called_once_with(broker_id)
 
     def test_demote_rollback_failure(self):
         # Dummy data
         broker_id = 123
+        remove_throttle = False
         previous_partitions_state = None
 
         with patch.object(
@@ -184,7 +218,7 @@ class TestDemoter(unittest.TestCase):
                 demoter = Demoter()
 
                 # Call the demote_rollback() method
-                demoter.demote_rollback(broker_id)
+                demoter.demote_rollback(broker_id, remove_throttle)
 
     def test_generate_tempfile_with_json_content(self):
         demoter = Demoter()

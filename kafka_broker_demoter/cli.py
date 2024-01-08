@@ -1,5 +1,6 @@
 import argparse
 import logging
+import sys
 
 from kafka_broker_demoter.configure_logging import configure_logging
 from kafka_broker_demoter.demoter import Demoter
@@ -11,9 +12,46 @@ def parseargs():
     parser = argparse.ArgumentParser(description="Kafka Broker Demoter")
     parser.add_argument(
         "demotion_action",
-        choices=["demote", "demote_rollback"],
-        help="The action to perform: demote or demote_rollback",
+        choices=["demote", "demote_rollback", "update_throttle"],
+        help="The action to perform: demote, demote_rollback or update_throttle",
     )
+    # Create an argument group for demote-related arguments
+    demote_group = parser.add_argument_group("demote")
+    demote_group.add_argument(
+        "--throttle-bytes",
+        type=int,
+        help="The max bytes per second each broker will either send or recieve for data replication (it does not affect client producer or consumers)",
+        default=-1,
+    )
+    # Create an argument group for demote_rollback-related arguments
+    demote_rollback_group = parser.add_argument_group("demote_rollback")
+    demote_rollback_group.add_argument(
+        "--remove-throttle",
+        action="store_true",
+        default=False,
+        required=False,
+        help="Indicates whether to remove the throttle for a previous demote operation",
+    )
+    # Create an argument group for update_throttle-related arguments
+    update_throttle_group = parser.add_argument_group("update_throttle")
+    update_throttle_group.add_argument(
+        "--update-throttle-bytes",
+        type=int,
+        default=False,
+        required=("update_throttle" in sys.argv),
+        help="Updates the max bytes per second each broker will either send or recieve for data replication (it does not affect client producer or consumers)",
+    )
+
+    update_throttle_group = parser.add_argument_group("update_throttle")
+    update_throttle_group.add_argument(
+        "--broker_ids",
+        nargs="+",
+        default=[],
+        required=False,
+        help="The specific broker ids (space separated) to apply the throttle, by default it's apply in all of them",
+    )
+
+    # Global arguments
     parser.add_argument(
         "--bootstrap-servers",
         type=str,
@@ -24,13 +62,13 @@ def parseargs():
     parser.add_argument(
         "--broker-id",
         type=int,
-        help="The ID of the broker to be demoted or rollback demote",
+        help="The ID of the broker to be demoted, rollback or update a throttle.",
         required=True,
     )
     parser.add_argument(
         "--kafka-path",
         type=str,
-        default="/usr/local/kafka",
+        default="/opt/kafka",
         help="Sets the Kafka installation path",
         required=False,
     )
@@ -79,6 +117,13 @@ def main():
     )
 
     if args.demotion_action == "demote":
-        demoter.demote(args.broker_id)
-    if args.demotion_action == "demote_rollback":
-        demoter.demote_rollback(args.broker_id)
+        demoter.demote(args.broker_id, args.throttle_bytes)
+    elif args.demotion_action == "demote_rollback":
+        demoter.demote_rollback(args.broker_id, args.remove_throttle)
+    elif args.demotion_action == "update_throttle":
+        # Convert broker_ids to a list of integers
+        if args.broker_ids:
+            args.broker_ids = [int(broker_id) for broker_id in args.broker_ids]
+        demoter.update_throttle(
+            args.broker_id, args.update_throttle_bytes, args.broker_ids
+        )

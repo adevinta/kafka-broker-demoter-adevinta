@@ -16,6 +16,8 @@ from kafka_broker_demoter.exceptions import (
     ChangeReplicaAssignmentError,
     ProduceRecordError,
     RecordNotFoundError,
+    SetBrokerThrottleError,
+    SetTopicThrottleError,
     TriggerLeaderElectionError,
 )
 
@@ -95,7 +97,7 @@ class Demoter(object):
         # Make sure record was saved
         self._consume_latest_record_per_key(key)
 
-        logger.info(
+        logger.debug(
             "Successful produced record with key {} and value {}".format(key, value)
         )
 
@@ -177,7 +179,7 @@ class Demoter(object):
         if len(latest_record_payload) == 0:
             logger.warning("Latest record not found for key {}".format(key))
             raise RecordNotFoundError
-        logger.info(
+        logger.debug(
             "Latest record found for key {}: {}".format(key, latest_record_payload[key])
         )
         return latest_record_payload[key]
@@ -260,7 +262,7 @@ class Demoter(object):
                 new_topics=[topic], validate_only=False
             )
 
-    def demote(self, broker_id):
+    def demote(self, broker_id, throttle):
         """
         Demotes a broker by reassigning the partition leaders from the specified broker to other brokers.
         If an ongoing or unfinished demote operation is found for the broker, a BrokerStatusError is raised.
@@ -302,8 +304,361 @@ class Demoter(object):
             self._change_replica_assignment(demoted_partitions_state)
             self._trigger_leader_election(demoted_partitions_state)
             self._save_rollback_plan(broker_id, current_partitions_state)
+            if throttle > 0:
+                self._set_throttles(broker_id, throttle)
 
-    def demote_rollback(self, broker_id):
+        logger.info("Broker {} was successfully demoted".format(broker_id))
+
+    def _unset_throttles(self, broker_id):
+        """
+        Unsets the throttles for previously set for a borker demotion.
+
+        Args:
+            broker_id (int): The ID to track the previous broker demtion.
+
+        Returns:
+            None
+
+        Raises:
+            None
+        """
+        follower_replicas_to_remove_throttle = (
+            self._get_follower_partitions_of_demoted_broker(broker_id)
+        )
+        leader_replicas_to_remove_throttle = (
+            self._get_leader_partitions_of_replicas_belonging_to_demoted_broker(
+                broker_id
+            )
+        )
+        self._unset_brokers_throttle()
+        self._unset_partitions_throttle(
+            "follower", follower_replicas_to_remove_throttle
+        )
+        self._unset_partitions_throttle("leader", leader_replicas_to_remove_throttle)
+
+    def _unset_brokers_throttle(self):
+        """
+        iRemove the replication throttle on all brokers in the Kafka cluster.
+
+        Args:
+            throttle (int): The replication throttle rate in bytes per second.
+
+        Raises:
+            SetBrokerThrottleError: If an error occurs while setting the throttle on a broker.
+
+        Returns:
+            None
+        """
+        cluster_metadata = self._get_admin_client.describe_cluster()
+        broker_ids = [broker["node_id"] for broker in cluster_metadata["brokers"]]
+        env_vars = os.environ.copy()
+        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+
+        for broker_id in broker_ids:
+            for type in ["follower", "leader"]:
+                command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.rate --entity-type brokers --entity-name {}".format(
+                    self.kafka_path,
+                    self.bootstrap_servers,
+                    type,
+                    broker_id,
+                )
+                result = subprocess.run(
+                    command, shell=True, capture_output=True, text=True, env=env_vars
+                )
+
+                if result.returncode != 0:
+                    logger.error(
+                        "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
+                            type, broker_id, result.stderr.strip(), command
+                        )
+                    )
+                    raise SetBrokerThrottleError(result.stderr.strip())
+        logger.info("Throttle has been removed in all the brokers")
+
+    def _set_throttles(self, demoted_broker_id, throttle):
+        """
+        Sets the replication throttles on all brokers and topcis in the Kafka cluster.
+
+        Args:
+            demoted_broker_id (int): The demoted broker id to create the map of partitions to be throttled.
+            throttle (int): The replication throttle rate in bytes per second.
+
+        Raises:
+            None
+
+        Returns:
+            None
+        """
+        follower_replicas_to_throttle = self._get_follower_partitions_of_demoted_broker(
+            demoted_broker_id
+        )
+        leader_replicas_to_throttle = (
+            self._get_leader_partitions_of_replicas_belonging_to_demoted_broker(
+                demoted_broker_id
+            )
+        )
+
+        self._set_brokers_to_be_throttled(throttle)
+        self._set_partitions_to_be_throttled("follower", follower_replicas_to_throttle)
+        self._set_partitions_to_be_throttled("leader", leader_replicas_to_throttle)
+
+    def _set_brokers_to_be_throttled(self, throttle, broker_ids=[]):
+        """
+        Sets the replication throttle on all brokers in the Kafka cluster.
+
+        Args:
+            throttle (int): The replication throttle rate in bytes per second.
+
+        Raises:
+            SetBrokerThrottleError: If an error occurs while setting the throttle on a broker.
+
+        Returns:
+            None
+        """
+        env_vars = os.environ.copy()
+        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+        cluster_metadata = self._get_admin_client.describe_cluster()
+        broker_ids_to_throttle = None
+
+        if len(broker_ids) == 0:
+            broker_ids_to_throttle = [
+                broker["node_id"] for broker in cluster_metadata["brokers"]
+            ]
+        else:
+            broker_ids_to_throttle = broker_ids
+
+        for broker_id in broker_ids_to_throttle:
+            for type in ["follower", "leader"]:
+                command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.rate={} --entity-type brokers --entity-name {}".format(
+                    self.kafka_path,
+                    self.bootstrap_servers,
+                    type,
+                    throttle,
+                    broker_id,
+                )
+                result = subprocess.run(
+                    command, shell=True, capture_output=True, text=True, env=env_vars
+                )
+
+                if result.returncode != 0:
+                    logger.error(
+                        "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
+                            type, broker_id, result.stderr.strip(), command
+                        )
+                    )
+                    raise SetBrokerThrottleError(result.stderr.strip())
+        logger.info(
+            "Throttle of {} bytes/sec has been applied in brokers: {}".format(
+                throttle, broker_ids_to_throttle
+            )
+        )
+
+    def _unset_partitions_throttle(self, type, replicas_to_remove_throttle):
+        """
+        Unsets the throttle for specific partitions on topics.
+
+        Args:
+            type (str): Throttle type to be removed (e.g., 'follower', 'leader').
+            replicas_to_remove_throttle (dict): Dictionary containing partition IDs and broker IDs for which the throttle
+                                            needs to be removed.
+
+        Returns:
+            None
+
+        Raises:
+            SetTopicThrottleError: If the throttle removal fails for any partition.
+        """
+        env_vars = os.environ.copy()
+        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+
+        for topic, replicas in replicas_to_remove_throttle.items():
+            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.replicas --entity-type topics --entity-name {}".format(
+                self.kafka_path,
+                self.bootstrap_servers,
+                type,
+                topic,
+            )
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, env=env_vars
+            )
+
+            if result.returncode != 0:
+                # If the topic was recreated the throttle does not exist anymore, so we can skip the error when trying to remove the throttle as it does not exist
+                if (
+                    "Invalid config(s): {}.replication.throttled.replicas".format(type)
+                    in result.stderr
+                ):
+                    logger.warning(
+                        "Throttle type: {} on topic {} could not be deleted as it does not exist, maybe the topic was recreated duirng the demotion process. command: {}".format(
+                            type, topic, command
+                        )
+                    )
+                    continue
+
+                logger.error(
+                    "Failed to trigger set throttle type {} on topic {} , error: {}, command: {}".format(
+                        type, topic, result.stderr.strip(), command
+                    )
+                )
+                raise SetTopicThrottleError(result.stderr.strip())
+
+            logger.info(
+                "{} throttle on topic {} has been removed on specific partitions (partitonId:brokerId) {}".format(
+                    type, topic, replicas
+                )
+            )
+
+    def _set_partitions_to_be_throttled(self, type, replicas_to_throttle):
+        """
+        Sets the throttle for specific partitions on topics.
+
+        Args:
+            type (str): Throttle type to be applied (e.g., 'follower', 'leader').
+            replicas_to_throttle (dict): Dictionary containing partition IDs and broker IDs for which the throttle
+                                     needs to be applied.
+
+        Returns:
+            None
+
+        Raises:
+            SetTopicThrottleError: If the throttle application fails for any partition.
+        """
+        env_vars = os.environ.copy()
+        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+
+        for topic, replicas in replicas_to_throttle.items():
+            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.replicas=[{}] --entity-type topics --entity-name {}".format(
+                self.kafka_path,
+                self.bootstrap_servers,
+                type,
+                replicas,
+                topic,
+            )
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, env=env_vars
+            )
+
+            if result.returncode != 0:
+                logger.error(
+                    "Failed to trigger set throttle type {} on topic {} , error: {}, command: {}".format(
+                        type, topic, result.stderr.strip(), command
+                    )
+                )
+                raise SetTopicThrottleError(result.stderr.strip())
+            logger.info(
+                "{} throttle on topic {} has been applied on specific partitions (partitonId:brokerId) {}".format(
+                    type, topic, replicas
+                )
+            )
+
+    def _get_follower_partitions_of_demoted_broker(self, broker_id):
+        """
+        Gets a dictionary where the key is the topic name and the value is a comma-separated string of partition:broker_id
+        pairs for partitions that have the given broker ID as one of their replicas.
+
+        Args:
+            broker_id (int): The ID of the broker.
+
+        Returns:
+            dict: A dictionary where the key is the topic name and the value is a comma-separated string of partition:broker_id
+            pairs for partitions with the given broker ID as one of their replicas.
+
+        Example:
+            _get_follower_partitions_of_demoted_broker(3)
+            Returns:
+            {'topic1': '0:3,1:3,2:3', 'topic2': '1:3', 'topic3': '3:3,4:3'}
+        """
+        topic_metadata = self._get_topics_metadata()
+        topics = {}
+
+        for topic in topic_metadata:
+            topic_name = topic["topic"]
+            for partition in topic["partitions"]:
+                partition_id = partition["partition"]
+                replicas = partition["replicas"]
+                if int(broker_id) in replicas:
+                    if topic_name not in topics:
+                        topics[topic_name] = []
+                    topics[topic_name].append("{}:{}".format(partition_id, broker_id))
+
+        result = {}
+        for name, partitions in topics.items():
+            result[name] = ",".join(partitions)
+        return result
+
+    def _get_leader_partitions_of_replicas_belonging_to_demoted_broker(self, broker_id):
+        """
+        Gets a dictionary where the key is the topic name and the value is a comma-separated string of partition:leader_broker_id
+        pairs for partitions that have the given broker ID as one of their replicas.
+
+        Args:
+            broker_id (int): The ID of the broker.
+
+        Returns:
+            dict: A dictionary where the key is the topic name and the value is a comma-separated string of partition:leader_broker_id
+            pairs for partitions with the given broker ID as one of their replicas.
+
+        Example:
+            _get_leader_partitions_of_replicas_belonging_to_demoted_broker(3)
+            Returns:
+            {'topic1': '0:2,1:3,2:1', 'topic2': '1:2', 'topic3': '3:3,4:2'}
+        """
+        topic_metadata = self._get_admin_client.describe_topics()
+
+        topics = {}
+        for topic in topic_metadata:
+            topic_name = topic["topic"]
+            for partition in topic["partitions"]:
+                partition_id = partition["partition"]
+                replicas = partition["replicas"]
+                leader_broker_id = partition["leader"]
+                if int(broker_id) in replicas:
+                    if topic_name not in topics:
+                        topics[topic_name] = []
+                    topics[topic_name].append(
+                        "{}:{}".format(partition_id, leader_broker_id)
+                    )
+
+        result = {}
+        for name, partitions in topics.items():
+            result[name] = ",".join(partitions)
+        return result
+
+    def update_throttle(self, demoted_broker_id, throttle, broker_ids=[]):
+        """
+        Update throttle value for broker demotion.
+
+        Parameters:
+        - demoted_broker_id (int): The ID of the demoted broker.
+        - throttle (int or float): The throttle value to be set.
+        - broker_ids (list): Optional list of broker IDs to be throttled.
+
+        Returns:
+        - None
+
+        Raises:
+        - RecordNotFoundError: If there is no ongoing or unfinished demotion operation for the given broker.
+        """
+        # self._consume_latest_record_per_key() can find a Null record for a previous demotion or raise RecordNotFoundError when the record does not exist
+        # We only update throttles when a broker is demoted
+        try:
+            if self._consume_latest_record_per_key(demoted_broker_id) is None:
+                raise RecordNotFoundError
+        except RecordNotFoundError:
+            logger.error(
+                "Ongoing or unfinished demote operation was not found for broker {}, Can't update the throttle value".format(
+                    demoted_broker_id
+                )
+            )
+            raise
+        logger.info(
+            "Updating global throttling value in all the brokers to: {}".format(
+                throttle
+            )
+        )
+        self._set_brokers_to_be_throttled(throttle, broker_ids)
+
+    def demote_rollback(self, broker_id, remove_throttle):
         """
         Perform a rollback for the previous demote operation on a specific broker.
 
@@ -326,6 +681,8 @@ class Demoter(object):
         self._change_replica_assignment(previous_partitions_state)
         self._trigger_leader_election(previous_partitions_state)
         self._produce_record(broker_id, None)
+        if remove_throttle:
+            self._unset_throttles(broker_id)
         logger.info(
             "Rollback plan for broker {} was successfully executed".format(broker_id)
         )
@@ -388,7 +745,7 @@ class Demoter(object):
         )
 
         if result.returncode != 0:
-            raise ChangeReplicaAssignmentError(result.stdout.strip())
+            raise ChangeReplicaAssignmentError(result.stderr.strip())
 
     def _generate_tmpfile_with_admin_configs(self):
         """
@@ -442,10 +799,10 @@ class Demoter(object):
         if result.returncode != 0:
             logger.error(
                 "Failed to trigger leader election, error: {}, command: {}".format(
-                    result.stdout.strip(), command
+                    result.stderr.strip(), command
                 )
             )
-            raise TriggerLeaderElectionError(result.stdout.strip())
+            raise TriggerLeaderElectionError(result.stderr.strip())
 
     def _save_rollback_plan(self, broker_id, current_partitions_state):
         logger.info("Saving rollback plan for broker {}".format(broker_id))

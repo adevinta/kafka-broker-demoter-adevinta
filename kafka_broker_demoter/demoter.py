@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import re
 import string
 import subprocess
 import tempfile
@@ -21,7 +22,6 @@ from kafka_broker_demoter.exceptions import (
     SetTopicThrottleError,
     TriggerLeaderElectionError,
 )
-import re
 
 logger = logging.getLogger(__name__)
 

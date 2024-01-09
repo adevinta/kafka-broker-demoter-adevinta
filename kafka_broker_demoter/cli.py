@@ -12,8 +12,8 @@ def parseargs():
     parser = argparse.ArgumentParser(description="Kafka Broker Demoter")
     parser.add_argument(
         "demotion_action",
-        choices=["demote", "demote_rollback", "update_throttle"],
-        help="The action to perform: demote, demote_rollback or update_throttle",
+        choices=["demote", "demote_rollback", "update_throttle", "check_throttle"],
+        help="The action to perform: demote, demote_rollback, update_throttle or check_throttle",
     )
     # Create an argument group for demote-related arguments
     demote_group = parser.add_argument_group("demote")
@@ -41,8 +41,6 @@ def parseargs():
         required=("update_throttle" in sys.argv),
         help="Updates the max bytes per second each broker will either send or recieve for data replication (it does not affect client producer or consumers)",
     )
-
-    update_throttle_group = parser.add_argument_group("update_throttle")
     update_throttle_group.add_argument(
         "--broker_ids",
         nargs="+",
@@ -63,7 +61,11 @@ def parseargs():
         "--broker-id",
         type=int,
         help="The ID of the broker to be demoted, rollback or update a throttle.",
-        required=True,
+        required=(
+            "demote" in sys.argv
+            or "demote_rollback" in sys.argv
+            or "update_throttle" in sys.argv
+        ),
     )
     parser.add_argument(
         "--kafka-path",
@@ -127,3 +129,5 @@ def main():
         demoter.update_throttle(
             args.broker_id, args.update_throttle_bytes, args.broker_ids
         )
+    elif args.demotion_action == "check_throttle":
+        demoter.check_throttle()

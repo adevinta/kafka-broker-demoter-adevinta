@@ -1,3 +1,7 @@
+class GetBrokerThrottleError(Exception):
+    pass
+
+
 class SetBrokerThrottleError(Exception):
     pass
 

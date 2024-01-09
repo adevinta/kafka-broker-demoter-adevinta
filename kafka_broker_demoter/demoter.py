@@ -14,12 +14,14 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
     ChangeReplicaAssignmentError,
+    GetBrokerThrottleError,
     ProduceRecordError,
     RecordNotFoundError,
     SetBrokerThrottleError,
     SetTopicThrottleError,
     TriggerLeaderElectionError,
 )
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -651,12 +653,49 @@ class Demoter(object):
                 )
             )
             raise
-        logger.info(
-            "Updating global throttling value in all the brokers to: {}".format(
-                throttle
-            )
-        )
         self._set_brokers_to_be_throttled(throttle, broker_ids)
+
+    def check_throttle(self):
+        env_vars = os.environ.copy()
+        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+        command = "{}/bin/kafka-configs.sh --bootstrap-server {} --describe --entity-type brokers".format(
+            self.kafka_path, self.bootstrap_servers
+        )
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, env=env_vars
+        )
+
+        if result.returncode != 0:
+            logger.error(
+                "Failed to get the current throttle value, error: {}".format(
+                    result.stderr.strip()
+                )
+            )
+            raise GetBrokerThrottleError(result.stderr.strip())
+        self._parse_describe_brokers_throttle(result.stdout.strip())
+
+    def _parse_describe_brokers_throttle(self, raw_describe_brokers_throttle):
+        broker_configs = {}
+
+        # Define regular expressions to extract broker ID and throttled rate
+        broker_id_pattern = re.compile(r"broker (\d+)")
+        throttled_rate_pattern = re.compile(
+            r"leader\.replication\.throttled\.rate=(\d+)"
+        )
+
+        # Split stdout into separate blocks for each broker
+        broker_blocks = raw_describe_brokers_throttle.split("Dynamic configs for ")
+        for block in broker_blocks[1:]:
+            broker_id_match = broker_id_pattern.search(block)
+            throttled_rate_match = throttled_rate_pattern.search(block)
+
+            # Check if matches were found
+            if broker_id_match and throttled_rate_match:
+                broker_id = int(broker_id_match.group(1))
+                throttled_rate = int(throttled_rate_match.group(1))
+                broker_configs[broker_id] = throttled_rate
+
+        print(json.dumps(broker_configs))
 
     def demote_rollback(self, broker_id, remove_throttle):
         """

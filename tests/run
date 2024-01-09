@@ -11,7 +11,7 @@ echo "Installing test libs..."
 pip3 install -r requirements/test_requirements.txt
  
 echo "Running Flake8 tests..."
-flake8 --ignore=E501 kafka_broker_demoter tests 
+flake8 --ignore=E501,W503 kafka_broker_demoter tests 
 
 echo "Running isort check..."
 isort --profile black -c kafka_broker_demoter tests

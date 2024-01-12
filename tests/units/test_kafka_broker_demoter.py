@@ -535,12 +535,14 @@ class TestDemoter(unittest.TestCase):
 
             # Test with a key that is not present in the received records
             with self.assertRaises(RecordNotFoundError):
+                mock_get_consumer.return_value.poll.side_effect = [sample_records, []]
                 demoter._consume_latest_record_per_key.retry.stop = stop_after_attempt(
                     1
                 )
                 demoter._consume_latest_record_per_key(4)
 
             # Test with a null record
+            mock_get_consumer.return_value.poll.side_effect = [sample_records, []]
             result = demoter._consume_latest_record_per_key(35)
             expected_result = None
             self.assertEqual(result, expected_result)

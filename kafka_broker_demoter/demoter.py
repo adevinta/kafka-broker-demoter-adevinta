@@ -148,7 +148,7 @@ class Demoter(object):
         return consumer
 
     @retry(
-        stop=stop_after_attempt(8),
+        stop=stop_after_attempt(4),
         wait=wait_fixed(1),
         reraise=True,
         retry=retry_if_exception_type(RecordNotFoundError),
@@ -167,15 +167,18 @@ class Demoter(object):
             RecordNotFoundError: If no record is found for the given key.
         """
         consumer = self._get_consumer()
-        records = consumer.poll(timeout_ms=10000)
         latest_record_payload = {}
 
-        for topic_partition, record_list in records.items():
-            for record in record_list:
-                if int(record.key.decode("utf-8")) == key:
-                    latest_record_payload[key] = json.loads(
-                        record.value.decode("utf-8")
-                    )
+        while True:
+            records = consumer.poll(timeout_ms=1000, max_records=100)
+            if len(records) == 0:
+                break
+            for topic_partition, record_list in records.items():
+                for record in record_list:
+                    if int(record.key.decode("utf-8")) == key:
+                        latest_record_payload[key] = json.loads(
+                            record.value.decode("utf-8")
+                        )
         consumer.close()
 
         if len(latest_record_payload) == 0:
@@ -302,6 +305,11 @@ class Demoter(object):
         else:
             demoted_partitions_state = self._get_demoting_proposal(
                 broker_id, current_partitions_state
+            )
+            logger.info(
+                "Moving leaderships away from broker: {}, it may take a while...".format(
+                    broker_id
+                )
             )
             self._change_replica_assignment(demoted_partitions_state)
             self._trigger_leader_election(demoted_partitions_state)
@@ -717,6 +725,11 @@ class Demoter(object):
                     broker_id
                 )
             )
+        logger.info(
+            "Executing demote rollback operation for broker: {}, it may take a while...".format(
+                broker_id
+            )
+        )
         self._change_replica_assignment(previous_partitions_state)
         self._trigger_leader_election(previous_partitions_state)
         self._produce_record(broker_id, None)

@@ -523,7 +523,7 @@ class TestDemoter(unittest.TestCase):
         }
 
         with patch.object(Demoter, "_get_consumer") as mock_get_consumer:
-            mock_get_consumer.return_value.poll.return_value = sample_records
+            mock_get_consumer.return_value.poll.side_effect = [sample_records, []]
             # Create an instance of Demoter
             demoter = Demoter()
 

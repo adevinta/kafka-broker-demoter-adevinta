@@ -127,7 +127,7 @@ def main():
         if args.broker_ids:
             args.broker_ids = [int(broker_id) for broker_id in args.broker_ids]
         demoter.update_throttle(
-            args.broker_id, args.update_throttle_bytes, args.broker_ids
+            args.broker_id, args.update_throttle_bytes, args.broker_id, args.broker_ids
         )
     elif args.demotion_action == "check_throttle":
         demoter.check_throttle()

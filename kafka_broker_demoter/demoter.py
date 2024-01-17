@@ -340,15 +340,15 @@ class Demoter(object):
                 broker_id
             )
         )
-        self._unset_brokers_throttle()
+        self._unset_brokers_throttle(broker_id)
         self._unset_partitions_throttle(
             "follower", follower_replicas_to_remove_throttle
         )
         self._unset_partitions_throttle("leader", leader_replicas_to_remove_throttle)
 
-    def _unset_brokers_throttle(self):
+    def _unset_brokers_throttle(self, demoted_broker_id):
         """
-        iRemove the replication throttle on all brokers in the Kafka cluster.
+        Remove the replication throttle on all brokers in the Kafka cluster.
 
         Args:
             throttle (int): The replication throttle rate in bytes per second.
@@ -364,25 +364,27 @@ class Demoter(object):
         env_vars = os.environ.copy()
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
 
+        type = "leader"
         for broker_id in broker_ids:
-            for type in ["follower", "leader"]:
-                command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.rate --entity-type brokers --entity-name {}".format(
-                    self.kafka_path,
-                    self.bootstrap_servers,
-                    type,
-                    broker_id,
-                )
-                result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True, env=env_vars
-                )
+            if broker_id == demoted_broker_id:
+                type = "follower"
+            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.rate --entity-type brokers --entity-name {}".format(
+                self.kafka_path,
+                self.bootstrap_servers,
+                type,
+                broker_id,
+            )
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, env=env_vars
+            )
 
-                if result.returncode != 0:
-                    logger.error(
-                        "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
-                            type, broker_id, result.stderr.strip(), command
-                        )
+            if result.returncode != 0:
+                logger.error(
+                    "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
+                        type, broker_id, result.stderr.strip(), command
                     )
-                    raise SetBrokerThrottleError(result.stderr.strip())
+                )
+                raise SetBrokerThrottleError(result.stderr.strip())
         logger.info("Throttle has been removed in all the brokers")
 
     def _set_throttles(self, demoted_broker_id, throttle):
@@ -408,11 +410,11 @@ class Demoter(object):
             )
         )
 
-        self._set_brokers_to_be_throttled(throttle)
+        self._set_brokers_to_be_throttled(throttle, demoted_broker_id)
         self._set_partitions_to_be_throttled("follower", follower_replicas_to_throttle)
         self._set_partitions_to_be_throttled("leader", leader_replicas_to_throttle)
 
-    def _set_brokers_to_be_throttled(self, throttle, broker_ids=[]):
+    def _set_brokers_to_be_throttled(self, throttle, demoted_broker_id, broker_ids=[]):
         """
         Sets the replication throttle on all brokers in the Kafka cluster.
 
@@ -437,26 +439,28 @@ class Demoter(object):
         else:
             broker_ids_to_throttle = broker_ids
 
+        type = "leader"
         for broker_id in broker_ids_to_throttle:
-            for type in ["follower", "leader"]:
-                command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.rate={} --entity-type brokers --entity-name {}".format(
-                    self.kafka_path,
-                    self.bootstrap_servers,
-                    type,
-                    throttle,
-                    broker_id,
-                )
-                result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True, env=env_vars
-                )
+            if broker_id == demoted_broker_id:
+                type = "follower"
+            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.rate={} --entity-type brokers --entity-name {}".format(
+                self.kafka_path,
+                self.bootstrap_servers,
+                type,
+                throttle,
+                broker_id,
+            )
+            result = subprocess.run(
+                command, shell=True, capture_output=True, text=True, env=env_vars
+            )
 
-                if result.returncode != 0:
-                    logger.error(
-                        "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
-                            type, broker_id, result.stderr.strip(), command
-                        )
+            if result.returncode != 0:
+                logger.error(
+                    "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
+                        type, broker_id, result.stderr.strip(), command
                     )
-                    raise SetBrokerThrottleError(result.stderr.strip())
+                )
+                raise SetBrokerThrottleError(result.stderr.strip())
         logger.info(
             "Throttle of {} bytes/sec has been applied in brokers: {}".format(
                 throttle, broker_ids_to_throttle
@@ -661,7 +665,7 @@ class Demoter(object):
                 )
             )
             raise
-        self._set_brokers_to_be_throttled(throttle, broker_ids)
+        self._set_brokers_to_be_throttled(throttle, demoted_broker_id, broker_ids)
 
     def check_throttle(self):
         env_vars = os.environ.copy()

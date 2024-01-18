@@ -14,13 +14,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fi
 
 from kafka_broker_demoter.exceptions import (
     BrokerStatusError,
-    ChangeReplicaAssignmentError,
-    GetBrokerThrottleError,
     ProduceRecordError,
     RecordNotFoundError,
-    SetBrokerThrottleError,
     SetTopicThrottleError,
-    TriggerLeaderElectionError,
+    SubprocessExecutionError,
 )
 
 logger = logging.getLogger(__name__)
@@ -346,6 +343,22 @@ class Demoter(object):
         )
         self._unset_partitions_throttle("leader", leader_replicas_to_remove_throttle)
 
+    def _execute_subprocess(self, command, env_vars, raise_exception_on_failure=True):
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, env=env_vars
+        )
+
+        if result.returncode != 0 and raise_exception_on_failure:
+            logger.error(
+                "Failed to execute subprocess command: {}, error: {}".format(
+                    command,
+                    result.stderr.strip(),
+                )
+            )
+            raise SubprocessExecutionError(result.stderr.strip())
+        else:
+            return result
+
     def _unset_brokers_throttle(self, demoted_broker_id):
         """
         Remove the replication throttle on all brokers in the Kafka cluster.
@@ -363,28 +376,19 @@ class Demoter(object):
         broker_ids = [broker["node_id"] for broker in cluster_metadata["brokers"]]
         env_vars = os.environ.copy()
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+        raw_command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.rate --entity-type brokers --entity-name {}"
 
-        type = "leader"
         for broker_id in broker_ids:
             if broker_id == demoted_broker_id:
-                type = "follower"
-            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --delete-config {}.replication.throttled.rate --entity-type brokers --entity-name {}".format(
-                self.kafka_path,
-                self.bootstrap_servers,
-                type,
-                broker_id,
-            )
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, env=env_vars
-            )
-
-            if result.returncode != 0:
-                logger.error(
-                    "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
-                        type, broker_id, result.stderr.strip(), command
-                    )
+                command = raw_command.format(
+                    self.kafka_path, self.bootstrap_servers, "follower", broker_id
                 )
-                raise SetBrokerThrottleError(result.stderr.strip())
+                self._execute_subprocess(command, env_vars)
+            else:
+                command = raw_command.format(
+                    self.kafka_path, self.bootstrap_servers, "follower", broker_id
+                )
+                self._execute_subprocess(command, env_vars)
         logger.info("Throttle has been removed in all the brokers")
 
     def _set_throttles(self, demoted_broker_id, throttle):
@@ -431,7 +435,7 @@ class Demoter(object):
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
         cluster_metadata = self._get_admin_client.describe_cluster()
         broker_ids_to_throttle = None
-
+        raw_command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.rate={} --entity-type brokers --entity-name {}"
         if len(broker_ids) == 0:
             broker_ids_to_throttle = [
                 broker["node_id"] for broker in cluster_metadata["brokers"]
@@ -439,28 +443,25 @@ class Demoter(object):
         else:
             broker_ids_to_throttle = broker_ids
 
-        type = "leader"
         for broker_id in broker_ids_to_throttle:
             if broker_id == demoted_broker_id:
-                type = "follower"
-            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.rate={} --entity-type brokers --entity-name {}".format(
-                self.kafka_path,
-                self.bootstrap_servers,
-                type,
-                throttle,
-                broker_id,
-            )
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, env=env_vars
-            )
-
-            if result.returncode != 0:
-                logger.error(
-                    "Failed to trigger set throttle type {} on broker {} , error: {}, command: {}".format(
-                        type, broker_id, result.stderr.strip(), command
-                    )
+                command = raw_command.format(
+                    self.kafka_path,
+                    self.bootstrap_servers,
+                    "follower",
+                    throttle,
+                    broker_id,
                 )
-                raise SetBrokerThrottleError(result.stderr.strip())
+            else:
+                command = raw_command.format(
+                    self.kafka_path,
+                    self.bootstrap_servers,
+                    "leader",
+                    throttle,
+                    broker_id,
+                )
+            self._execute_subprocess(command, env_vars)
+
         logger.info(
             "Throttle of {} bytes/sec has been applied in brokers: {}".format(
                 throttle, broker_ids_to_throttle
@@ -492,10 +493,9 @@ class Demoter(object):
                 type,
                 topic,
             )
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, env=env_vars
+            result = self._execute_subprocess(
+                command, env_vars, raise_exception_on_failure=False
             )
-
             if result.returncode != 0:
                 # If the topic was recreated the throttle does not exist anymore, so we can skip the error when trying to remove the throttle as it does not exist
                 if (
@@ -539,26 +539,18 @@ class Demoter(object):
         """
         env_vars = os.environ.copy()
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+        raw_command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.replicas=[{}] --entity-type topics --entity-name {}"
 
         for topic, replicas in replicas_to_throttle.items():
-            command = "{}/bin/kafka-configs.sh --bootstrap-server {} --alter --add-config {}.replication.throttled.replicas=[{}] --entity-type topics --entity-name {}".format(
+            command = raw_command.format(
                 self.kafka_path,
                 self.bootstrap_servers,
                 type,
                 replicas,
                 topic,
             )
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, env=env_vars
-            )
+            self._execute_subprocess(command, env_vars)
 
-            if result.returncode != 0:
-                logger.error(
-                    "Failed to trigger set throttle type {} on topic {} , error: {}, command: {}".format(
-                        type, topic, result.stderr.strip(), command
-                    )
-                )
-                raise SetTopicThrottleError(result.stderr.strip())
             logger.info(
                 "{} throttle on topic {} has been applied on specific partitions (partitonId:brokerId) {}".format(
                     type, topic, replicas
@@ -673,17 +665,7 @@ class Demoter(object):
         command = "{}/bin/kafka-configs.sh --bootstrap-server {} --describe --entity-type brokers".format(
             self.kafka_path, self.bootstrap_servers
         )
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, env=env_vars
-        )
-
-        if result.returncode != 0:
-            logger.error(
-                "Failed to get the current throttle value, error: {}".format(
-                    result.stderr.strip()
-                )
-            )
-            raise GetBrokerThrottleError(result.stderr.strip())
+        result = self._execute_subprocess(command, env_vars)
         self._parse_describe_brokers_throttle(result.stdout.strip())
 
     def _parse_describe_brokers_throttle(self, raw_describe_brokers_throttle):
@@ -796,12 +778,7 @@ class Demoter(object):
         )
         env_vars = os.environ.copy()
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, env=env_vars
-        )
-
-        if result.returncode != 0:
-            raise ChangeReplicaAssignmentError(result.stderr.strip())
+        self._execute_subprocess(command, env_vars)
 
     def _generate_tmpfile_with_admin_configs(self):
         """
@@ -848,17 +825,7 @@ class Demoter(object):
         )
         env_vars = os.environ.copy()
         env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, env=env_vars
-        )
-
-        if result.returncode != 0:
-            logger.error(
-                "Failed to trigger leader election, error: {}, command: {}".format(
-                    result.stderr.strip(), command
-                )
-            )
-            raise TriggerLeaderElectionError(result.stderr.strip())
+        self._execute_subprocess(command, env_vars)
 
     def _save_rollback_plan(self, broker_id, current_partitions_state):
         logger.info("Saving rollback plan for broker {}".format(broker_id))

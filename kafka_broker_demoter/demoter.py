@@ -167,7 +167,7 @@ class Demoter(object):
         latest_record_payload = {}
 
         while True:
-            records = consumer.poll(timeout_ms=1000, max_records=100)
+            records = consumer.poll(timeout_ms=5000, max_records=100)
             if len(records) == 0:
                 break
             for topic_partition, record_list in records.items():

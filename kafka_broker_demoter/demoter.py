@@ -386,7 +386,7 @@ class Demoter(object):
                 self._execute_subprocess(command, env_vars)
             else:
                 command = raw_command.format(
-                    self.kafka_path, self.bootstrap_servers, "follower", broker_id
+                    self.kafka_path, self.bootstrap_servers, "leader", broker_id
                 )
                 self._execute_subprocess(command, env_vars)
         logger.info("Throttle has been removed in all the brokers")

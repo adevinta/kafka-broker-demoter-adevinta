@@ -288,9 +288,10 @@ class TestDemoter(unittest.TestCase):
             env=expected_env_vars,
         )
 
+    @patch("time.sleep")
     @patch("subprocess.run")
     @patch("os.environ.copy")
-    def test_trigger_leader_election(self, mock_environ_copy, mock_subprocess_run):
+    def test_trigger_leader_election(self, mock_environ_copy, mock_subprocess_run, mock_sleep):
         kafka_path = "/path/to/kafka"
         bootstrap_servers = "localhost:9092"
         kafka_heap_opts = "-Xmx1G"
@@ -337,9 +338,10 @@ class TestDemoter(unittest.TestCase):
         # This assertion looks that we are throttling the nº of concurrent leadership movements
         assert mock_subprocess_run.call_count == len(demoting_plan["partitions"]) / concurrent_leader_movements
 
+    @patch("time.sleep")
     @patch("subprocess.run")
     @patch("os.environ.copy")
-    def test_concurrent_leader_movement_bigger_than_partitions_of_plan(self, mock_environ_copy, mock_subprocess_run):
+    def test_concurrent_leader_movement_bigger_than_partitions_of_plan(self, mock_environ_copy, mock_subprocess_run, mock_sleep):
         kafka_path = "/path/to/kafka"
         bootstrap_servers = "localhost:9092"
         kafka_heap_opts = "-Xmx1G"

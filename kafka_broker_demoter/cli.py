@@ -68,6 +68,13 @@ def parseargs():
         ),
     )
     parser.add_argument(
+        "--concurrent-leader-movements",
+        type=int,
+        help="The max nº of leader movements that will be carried out at the same time.",
+        default=1,
+        required=False,
+    )
+    parser.add_argument(
         "--kafka-path",
         type=str,
         default="/opt/kafka",
@@ -119,9 +126,9 @@ def main():
     )
 
     if args.demotion_action == "demote":
-        demoter.demote(args.broker_id, args.throttle_bytes)
+        demoter.demote(args.broker_id, args.throttle_bytes, args.concurrent_leader_movements)
     elif args.demotion_action == "demote_rollback":
-        demoter.demote_rollback(args.broker_id, args.remove_throttle)
+        demoter.demote_rollback(args.broker_id, args.remove_throttle, args.concurrent_leader_movements)
     elif args.demotion_action == "update_throttle":
         # Convert broker_ids to a list of integers
         if args.broker_ids:

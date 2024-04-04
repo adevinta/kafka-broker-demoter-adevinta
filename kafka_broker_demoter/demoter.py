@@ -752,7 +752,7 @@ class Demoter(object):
         partitions_temp_filepath = tempfile.mktemp(
             suffix=".json", prefix=filename
         )
-
+        self.partitions_temp_filepath = partitions_temp_filepath
         with open(partitions_temp_filepath, "w") as temp_file:
             json.dump(data, temp_file)
             return partitions_temp_filepath
@@ -791,11 +791,11 @@ class Demoter(object):
             str: The path/name of the temporary file.
 
         """
-        self.admin_config_tmp_file = tempfile.NamedTemporaryFile(delete=False)
+        admin_config_tmp_file = tempfile.NamedTemporaryFile(delete=False)
 
-        self.admin_config_tmp_file.write(self.admin_config_content.encode())
-        self.admin_config_tmp_file.close()
-        return self.admin_config_tmp_file.name
+        admin_config_tmp_file.write(self.admin_config_content.encode())
+        admin_config_tmp_file.close()
+        return admin_config_tmp_file.name
 
     def _trigger_leader_election(self, demoting_plan, concurrent_leader_movements):
         """
@@ -814,7 +814,6 @@ class Demoter(object):
             TriggerLeaderElectionError: If the leader election fails.
 
         """
-
         # Split entry items into groups of N=concurrent_leader_movements
         grouped_entries = [demoting_plan["partitions"][i:i+concurrent_leader_movements] for i in range(0, len(demoting_plan["partitions"]), concurrent_leader_movements)]
 

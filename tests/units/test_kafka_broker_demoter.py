@@ -335,7 +335,53 @@ class TestDemoter(unittest.TestCase):
         )
         # Assert that we are calling subprocess.run() the required times
         # This assertion looks that we are throttling the nº of concurrent leadership movements
-        assert mock_subprocess_run.call_count == len(demoting_plan["partitions"]) / num_concurrent_leader_movements
+        assert mock_subprocess_run.call_count == len(demoting_plan["partitions"]) / concurrent_leader_movements
+
+    @patch("subprocess.run")
+    @patch("os.environ.copy")
+    def test_concurrent_leader_movement_bigger_than_partitions_of_plan(self, mock_environ_copy, mock_subprocess_run):
+        kafka_path = "/path/to/kafka"
+        bootstrap_servers = "localhost:9092"
+        kafka_heap_opts = "-Xmx1G"
+        demoting_plan = {"partitions": [{"topic": "foo", "partition": 1}]}
+        concurrent_leader_movements = 5
+
+        # Mock subprocess.run() method behavior
+        mock_subprocess_run.return_value = MagicMock(
+            returncode=0,
+            stdout="Leader election successful",
+            stderr="",
+        )
+
+        demoter = Demoter(
+            kafka_path=kafka_path,
+            bootstrap_servers=bootstrap_servers,
+            kafka_heap_opts=kafka_heap_opts,
+        )
+        demoter._trigger_leader_election(demoting_plan, concurrent_leader_movements)
+
+        # Generate the command and expected environment variables
+        expected_command = "{}/bin/kafka-leader-election.sh --admin.config {} --bootstrap-server {} --election-type PREFERRED --path-to-json-file {}".format(
+            kafka_path,
+            demoter.admin_config_tmp_file,
+            bootstrap_servers,
+            demoter.partitions_temp_filepath,
+        )
+
+        expected_env_vars = os.environ.copy()
+        expected_env_vars["KAFKA_HEAP_OPTS"] = kafka_heap_opts
+
+        # Assert that subprocess.run() is called with correct parameters
+        mock_subprocess_run.assert_called_with(
+            expected_command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            env=expected_env_vars,
+        )
+        # Assert that we are calling subprocess.run() the required times.
+        # If concurrent_leader_movements is bigger than nº of partitions to move, we call the CLI once
+        assert mock_subprocess_run.call_count == 1
 
     def test_get_partition_leaders_by_broker_id(self):
         demoter = Demoter()

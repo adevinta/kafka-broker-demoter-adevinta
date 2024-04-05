@@ -46,7 +46,6 @@ class Demoter(object):
         )
         self.admin_config_tmp_file = self._generate_tmpfile_with_admin_configs()
 
-
     @property
     def _get_admin_client(self):
         if self.admin_client is None:
@@ -95,7 +94,7 @@ class Demoter(object):
             logger.warning("Failed to produce message: {}, trying again...".format(e))
             raise ProduceRecordError
 
-        # Make sure record was saved, agregar si no itienen ack=all
+        # Make sure record was saved
         self._consume_latest_record_per_key(key)
 
         logger.debug(
@@ -815,7 +814,7 @@ class Demoter(object):
 
         """
         # Split entry items into groups of N=concurrent_leader_movements
-        grouped_entries = [demoting_plan["partitions"][i:i+concurrent_leader_movements] for i in range(0, len(demoting_plan["partitions"]), concurrent_leader_movements)]
+        grouped_entries = [demoting_plan["partitions"][i:i + concurrent_leader_movements] for i in range(0, len(demoting_plan["partitions"]), concurrent_leader_movements)]
 
         # Iterate over each group
         for group in grouped_entries:

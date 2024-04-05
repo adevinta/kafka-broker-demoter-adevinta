@@ -295,10 +295,7 @@ class TestDemoter(unittest.TestCase):
         kafka_path = "/path/to/kafka"
         bootstrap_servers = "localhost:9092"
         kafka_heap_opts = "-Xmx1G"
-        demoting_plan = {"partitions":
-                            [{"topic": "foo", "partition": 1},
-                            {"topic": "foobar", "partition": 2}]
-                        }
+        demoting_plan = {"partitions": [{"topic": "foo", "partition": 1}, {"topic": "foobar", "partition": 2}]}
         concurrent_leader_movements = 1
 
         # Mock subprocess.run() method behavior

@@ -818,11 +818,11 @@ class Demoter(object):
 
         # Iterate over each group
         for group in grouped_entries:
-            logger.info("Running kafka-leader-election on partitions: {}".format(group)) 
+            logger.info("Running kafka-leader-election on partitions: {}".format(group))
             demoting_plan_filepath = self._generate_tempfile_with_json_content(
                 {"partitions": group}
             )
-            
+
             command = "{}/bin/kafka-leader-election.sh --admin.config {} --bootstrap-server {} --election-type PREFERRED --path-to-json-file {}".format(
                 self.kafka_path,
                 self.admin_config_tmp_file,

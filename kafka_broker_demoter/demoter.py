@@ -7,6 +7,7 @@ import re
 import string
 import subprocess
 import tempfile
+import time
 
 from kafka import KafkaAdminClient, KafkaConsumer, KafkaProducer
 from kafka.admin import NewTopic
@@ -40,10 +41,10 @@ class Demoter(object):
 
         self.admin_client = None
         self.partitions_temp_filepath = None
-        self.admin_config_tmp_file = None
         self.admin_config_content = (
             "default.api.timeout.ms=240000\nrequest.timeout.ms=120000"
         )
+        self.admin_config_tmp_file = self._generate_tmpfile_with_admin_configs()
 
     @property
     def _get_admin_client(self):
@@ -264,7 +265,7 @@ class Demoter(object):
                 new_topics=[topic], validate_only=False
             )
 
-    def demote(self, broker_id, throttle):
+    def demote(self, broker_id, throttle, num_concurrent_leader_movements):
         """
         Demotes a broker by reassigning the partition leaders from the specified broker to other brokers.
         If an ongoing or unfinished demote operation is found for the broker, a BrokerStatusError is raised.
@@ -309,7 +310,8 @@ class Demoter(object):
                 )
             )
             self._change_replica_assignment(demoted_partitions_state)
-            self._trigger_leader_election(demoted_partitions_state)
+            self._trigger_leader_election(demoted_partitions_state, num_concurrent_leader_movements)
+
             self._save_rollback_plan(broker_id, current_partitions_state)
             if throttle > 0:
                 self._set_throttles(broker_id, throttle)
@@ -691,7 +693,7 @@ class Demoter(object):
 
         print(json.dumps(broker_configs))
 
-    def demote_rollback(self, broker_id, remove_throttle):
+    def demote_rollback(self, broker_id, remove_throttle, num_concurrent_leader_movements):
         """
         Perform a rollback for the previous demote operation on a specific broker.
 
@@ -717,7 +719,7 @@ class Demoter(object):
             )
         )
         self._change_replica_assignment(previous_partitions_state)
-        self._trigger_leader_election(previous_partitions_state)
+        self._trigger_leader_election(previous_partitions_state, num_concurrent_leader_movements)
         self._produce_record(broker_id, None)
         if remove_throttle:
             self._unset_throttles(broker_id)
@@ -739,22 +741,20 @@ class Demoter(object):
             None.
 
         Notes:
-            - If `self.partitions_temp_filepath` is already set, a new temporary file will not be generated.
             - The generated filepath will have a random filename consisting of lowercase letters and digits.
             - The generated filepath will have the '.json' extension.
 
         """
-        if self.partitions_temp_filepath is None:
-            filename = "".join(
-                random.choices(string.ascii_lowercase + string.digits, k=10)
-            )
-            self.partitions_temp_filepath = tempfile.mktemp(
-                suffix=".json", prefix=filename
-            )
-
-        with open(self.partitions_temp_filepath, "w") as temp_file:
+        filename = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=10)
+        )
+        partitions_temp_filepath = tempfile.mktemp(
+            suffix=".json", prefix=filename
+        )
+        self.partitions_temp_filepath = partitions_temp_filepath
+        with open(partitions_temp_filepath, "w") as temp_file:
             json.dump(data, temp_file)
-            return self.partitions_temp_filepath
+            return partitions_temp_filepath
 
     def _change_replica_assignment(self, demoting_plan):
         """
@@ -783,49 +783,56 @@ class Demoter(object):
     def _generate_tmpfile_with_admin_configs(self):
         """
         Generate a temporary file containing the admin configurations.
-
-        If the temporary file doesn't already exist, it will be created. The admin configurations
-        are written to the file, and the file is closed before returning its name.
+        The admin configurations are written to the file, and the file
+        is closed before returning its name.
 
         Returns:
             str: The path/name of the temporary file.
 
         """
-        if self.admin_config_tmp_file is None:
-            self.admin_config_tmp_file = tempfile.NamedTemporaryFile(delete=False)
+        admin_config_tmp_file = tempfile.NamedTemporaryFile(delete=False)
 
-        self.admin_config_tmp_file.write(self.admin_config_content.encode())
-        self.admin_config_tmp_file.close()
-        return self.admin_config_tmp_file.name
+        admin_config_tmp_file.write(self.admin_config_content.encode())
+        admin_config_tmp_file.close()
+        return admin_config_tmp_file.name
 
-    def _trigger_leader_election(self, demoting_plan):
+    def _trigger_leader_election(self, demoting_plan, concurrent_leader_movements):
         """
         Trigger a leader election using the demoting plan.
 
         This method runs the `kafka-leader-election.sh` script with the provided demoting plan.
         The command is executed using the provided Kafka installation's path, the generated admin
         configurations, the bootstrap servers, and the path to the temporary file containing
-        the demoting plan in JSON format.
+        the demoting plan in JSON format. The number of leadership movements is limited to concurrent_leader_movements
+        to avoid stressing the brokers.
 
         Args:
             demoting_plan (dict or list): A dictionary or list representation of the demoting plan.
-
+            concurrent_leader_movements (int): Nº of concurrent leader movements between brokers.
         Raises:
             TriggerLeaderElectionError: If the leader election fails.
 
         """
-        demoting_plan_filepath = self._generate_tempfile_with_json_content(
-            demoting_plan
-        )
-        command = "{}/bin/kafka-leader-election.sh --admin.config {} --bootstrap-server {} --election-type PREFERRED --path-to-json-file {}".format(
-            self.kafka_path,
-            self._generate_tmpfile_with_admin_configs(),
-            self.bootstrap_servers,
-            demoting_plan_filepath,
-        )
-        env_vars = os.environ.copy()
-        env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
-        self._execute_subprocess(command, env_vars)
+        # Split entry items into groups of N=concurrent_leader_movements
+        grouped_entries = [demoting_plan["partitions"][i:i + concurrent_leader_movements] for i in range(0, len(demoting_plan["partitions"]), concurrent_leader_movements)]
+
+        # Iterate over each group
+        for group in grouped_entries:
+            logger.info("Running kafka-leader-election on partitions: {}".format(group))
+            demoting_plan_filepath = self._generate_tempfile_with_json_content(
+                {"partitions": group}
+            )
+
+            command = "{}/bin/kafka-leader-election.sh --admin.config {} --bootstrap-server {} --election-type PREFERRED --path-to-json-file {}".format(
+                self.kafka_path,
+                self.admin_config_tmp_file,
+                self.bootstrap_servers,
+                demoting_plan_filepath,
+            )
+            env_vars = os.environ.copy()
+            env_vars["KAFKA_HEAP_OPTS"] = self.kafka_heap_opts
+            self._execute_subprocess(command, env_vars)
+            time.sleep(1)
 
     def _save_rollback_plan(self, broker_id, current_partitions_state):
         logger.info("Saving rollback plan for broker {}".format(broker_id))

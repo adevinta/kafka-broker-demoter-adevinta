@@ -54,6 +54,7 @@ The demote rollback action will revert the changes made by the demote action, re
 
 - `--bootstrap-servers`: The list of Kafka brokers to connect to. Required for both actions.
 - `--kafka-path`: The path to the Kafka installation directory. Default: /opt/kafka.
+- `--concurrent-leader-movements`: The number of concurrent leadership movements beetween brokers.
 - `--kafka-heap-opts`: The heap options to use when starting Kafka. Default: -Xmx512M.
 - `--topic-tracker`: The topic tracker to use. Default: `default`.
 - `--log-file`: The path to the log file. Default: kafka_broker_demoter.log.
